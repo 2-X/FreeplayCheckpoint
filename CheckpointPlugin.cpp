@@ -119,6 +119,32 @@ void CheckpointPlugin::onLoad()
 	boolvar("cpt_mirror_loads", "If set, randomly mirror when loading checkpoints", &mirrorLoads);
 	boolvar("cpt_randomize_loads", "If set, load a random checkpoint instead of the latest", &randomizeLoads);
 
+	// Register CVars for action thresholds and enable/disable toggles
+	cvarManager->registerCvar("enable_throttle_unpause", "1", "Enable throttle to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("throttle_threshold", "0.1", "Threshold for throttle to unpause", true, true, 0, true, 1, true);
+
+	cvarManager->registerCvar("enable_steer_unpause", "0", "Enable steering to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("steer_threshold", "0.1", "Threshold for steering to unpause", true, true, 0, true, 1, true);
+
+	cvarManager->registerCvar("enable_pitch_unpause", "1", "Enable pitch to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("pitch_threshold", "0.1", "Threshold for pitch to unpause", true, true, 0, true, 1, true);
+
+	cvarManager->registerCvar("enable_yaw_unpause", "1", "Enable yaw to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("yaw_threshold", "0.1", "Threshold for yaw to unpause", true, true, 0, true, 1, true);
+
+	cvarManager->registerCvar("enable_roll_unpause", "1", "Enable roll to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("roll_threshold", "0.1", "Threshold for roll to unpause", true, true, 0, true, 1, true);
+
+	cvarManager->registerCvar("enable_handbrake_unpause", "1", "Enable handbrake to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("enable_jump_unpause", "1", "Enable jump to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("enable_boost_activate_unpause", "1", "Enable boost activation to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("enable_boost_hold_unpause", "1", "Enable boost hold to unpause", true, true, 0, true, 1, true);
+
+
+	cvarManager->registerCvar("rewind_axis", "steer", "Input used for rewinding (steer, throttle, pitch, yaw, roll)");
+	cvarManager->registerCvar("matching_axis", "none", "Your bind that is on the same stick as the rewind input");
+
+	// original cvars
 	cvarManager->registerCvar("cpt_allow_delete_all", "0", "Enables the delete all button", false, true, 0, true, 1, false);
 
 	cvarManager->registerCvar("cpt_car_frozen", "0", "Set when the car is frozen; read-only", false, true, 0, true, 1, false);
@@ -581,6 +607,26 @@ void CheckpointPlugin::OnPreAsync(std::string funcName)
 	}
 }
 
+// Helper function to get the input value based on axis name
+float getInputValue(const std::string& axisName, const ControllerInput& ci) {
+	if (axisName == "throttle") {
+		return ci.Throttle;
+	}
+	else if (axisName == "pitch") {
+		return ci.Pitch;
+	}
+	else if (axisName == "roll") {
+		return ci.Roll;
+	}
+	else if (axisName == "yaw") {
+		return ci.Yaw;
+	}
+	else if (axisName == "steer") {
+		return ci.Steer;
+	}
+	return 0.0f; // Default return if axisName doesn't match
+}
+
 // Returns true if we need to apply the state again.
 bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	ControllerInput ci = sw.GetCars().Get(0).GetInput();
@@ -595,14 +641,51 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 		return false;  // Ignored whatever inputs may have happened to exit mode; do not apply state.
 	}
 	lastRewindTime = currentTime;
-	int buttonsDown = (abs(ci.Throttle) > 0.1 ? 0x01 : 0) |
-		(abs(ci.Roll) > 0.1 ? 0x02 : 0) |
-		(ci.Handbrake ? 0x04 : 0) |
-		(ci.Jump ? 0x08 : 0) |
-		(ci.ActivateBoost ? 0x10 : 0) |
-		(ci.HoldingBoost ? 0x20 : 0) |
-		((rewindState.atCheckpoint || rewindState.justLoadedQuickCheckpoint) && abs(ci.Steer) >= .05 ? 0x40 : 0) |
-		((rewindState.atCheckpoint || rewindState.justLoadedQuickCheckpoint || abs(ci.Pitch) >= .7) && abs(ci.Pitch) >= .05 ? 0x80 : 0);
+
+	// Get user settings
+	std::string rewindAxis = cvarManager->getCvar("rewind_axis").getStringValue();
+	std::string matchingAxis = cvarManager->getCvar("matching_axis").getStringValue();
+
+	// Determine the active and matching inputs based on user selection
+	float rewindInput = getInputValue(rewindAxis, ci);
+	float matchingInput = getInputValue(matchingAxis, ci);
+
+	// Retrieve rewind unpause settings from CVars
+	int buttonsDown = 0;
+	bool isAtCheckpoint = rewindState.atCheckpoint || rewindState.justLoadedQuickCheckpoint;
+
+	auto checkAndSet = [&](const std::string& axis, float axisValue, const char* unpauseSetting, const char* thresholdSetting, int buttonBit) {
+		if (axis == rewindAxis) {
+  			return;
+		}
+		if (cvarManager->getCvar(unpauseSetting).getBoolValue()) {
+			float effectiveThreshold = cvarManager->getCvar(thresholdSetting).getFloatValue();
+			if ((axis == matchingAxis) && isAtCheckpoint) {
+				effectiveThreshold = 0.9; 
+			}
+			if (fabs(axisValue) > effectiveThreshold) {
+				buttonsDown |= buttonBit;
+			}
+		}
+	};
+
+	// Check analog inputs
+	checkAndSet("throttle", ci.Throttle, "enable_throttle_unpause", "throttle_threshold", 0x01);
+	checkAndSet("roll", ci.Roll, "enable_roll_unpause", "roll_threshold", 0x02);
+	checkAndSet("steer", ci.Steer, "enable_steer_unpause", "steer_threshold", 0x40);
+	checkAndSet("pitch", ci.Pitch, "enable_pitch_unpause", "pitch_threshold", 0x80);
+	checkAndSet("yaw", ci.Yaw, "enable_yaw_unpause", "yaw_threshold", 0x100);
+
+	// Directly check digital inputs without considering the "matching axis"
+	if (cvarManager->getCvar("enable_handbrake_unpause").getBoolValue() && ci.Handbrake)
+		buttonsDown |= 0x04;
+	if (cvarManager->getCvar("enable_jump_unpause").getBoolValue() && ci.Jump)
+		buttonsDown |= 0x08;
+	if (cvarManager->getCvar("enable_boost_activate_unpause").getBoolValue() && ci.ActivateBoost)
+		buttonsDown |= 0x10;
+	if (cvarManager->getCvar("enable_boost_hold_unpause").getBoolValue() && ci.HoldingBoost)
+		buttonsDown |= 0x20;
+
 	// See if we should exit rewind mode due to input.
 	if (buttonsDown != 0) {
 		if ((buttonsDown > rewindState.buttonsDown && currentTime - lastRecordTime > 0.1f) ||
@@ -630,13 +713,13 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	rewindState.buttonsDown = buttonsDown;
 
 	// Determine how much to rewind / advance time.
-	if (abs(ci.Steer) < .05f) { // Ignore slight input; keep current game state.
+	if (abs(rewindInput) < .05f) { // Ignore slight input; keep current game state.
 		return true; // Ignoring input; apply state.
 	}
 	rewindState.deleting = false;
-	if (ci.Steer < -.95 && rewindState.holdingFor <= 0) {
+	if (rewindInput< -.95 && rewindState.holdingFor <= 0) {
 		rewindState.holdingFor -= elapsed;
-	} else if (ci.Steer > .95 && rewindState.holdingFor >= 0) {
+	} else if (rewindInput > .95 && rewindState.holdingFor >= 0) {
 		rewindState.holdingFor += elapsed;
 	} else {
 		rewindState.holdingFor = 0;
@@ -644,10 +727,17 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	float factor = std::clamp(abs(rewindState.holdingFor) * 2, 1.0f, 10.0f);
 
 	// How much (in seconds) to move "current" (positive or negative)
-	float deltaElapsed = factor * elapsed * ci.Steer; // full left = 2-5 seconds/second
+	float deltaElapsed = factor * elapsed * rewindInput; // full left = 2-5 seconds/second
+
+	// if you are trying to use the matching axis more than the rewind axis
+	// and you've haven't hit the threshold to unpause, don't rewind
+	if (matchingAxis != "None" && fabs(matchingInput) > fabs(rewindInput)) {
+		deltaElapsed = 0;
+	}
 
 	rewindState.virtualTimeOffset = std::clamp(
 		rewindState.virtualTimeOffset + deltaElapsed, -snapshotInterval * history.size(), .0f);
+
 	float historyOffset = rewindState.virtualTimeOffset / snapshotInterval;
 	size_t current = std::clamp<size_t>(
 		history.size() + size_t(floor(historyOffset)), 0, history.size() - 1);

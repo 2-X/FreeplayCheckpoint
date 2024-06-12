@@ -105,6 +105,25 @@ void CheckpointPlugin::writeSettingsFile() {
 9| Freeplay Checkpoint
 9| Bugs/Feature Requests: github.com/NitrOP7674 -or- on Discord: https://discord.gg/SPBxrtfrZw
 9| ** Please make sure to read the README first! **
+8|
+6|Rewind Input Method|rewind_axis|Steer@steer&Throttle@throttle&Pitch@pitch&Yaw@yaw&Roll@roll
+6|Rewind Input Matching Axis Bind|matching_axis|None@none&Steer@steer&Throttle@throttle&Pitch@pitch&Yaw@yaw&Roll@roll
+8|
+9|Rewind Unpause Actions Configuration:
+1|Throttle Unpauses|enable_throttle_unpause
+4|Throttle Threshold|throttle_threshold|0.0|1.0
+1|Steer Unpauses|enable_steer_unpause
+4|Steer Threshold|steer_threshold|0.0|1.0
+1|Pitch Unpauses|enable_pitch_unpause
+4|Pitch Threshold|pitch_threshold|0.0|1.0
+1|Yaw Unpauses|enable_yaw_unpause
+4|Yaw Threshold|yaw_threshold|0.0|1.0
+1|Roll Unpauses|enable_roll_unpause
+4|Roll Threshold|roll_threshold|0.0|1.0
+1|Handbrake Unpauses|enable_handbrake_unpause
+1|Jump Unpauses|enable_jump_unpause
+1|Boost Unpauses|enable_boost_activate_unpause
+1|Boost Hold Unpauses|enable_boost_hold_unpause
 )";
 	setFile.close();
 	cvarManager->executeCommand("cl_settings_refreshplugins");
