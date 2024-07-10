@@ -121,19 +121,21 @@ void CheckpointPlugin::onLoad()
 
 	// Register CVars for action thresholds and enable/disable toggles
 	cvarManager->registerCvar("enable_throttle_unpause", "1", "Enable throttle to unpause", true, true, 0, true, 1, true);
-	cvarManager->registerCvar("throttle_threshold", "0.1", "Threshold for throttle to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("throttle_threshold", "0.85", "Threshold for throttle to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_steer_unpause", "0", "Enable steering to unpause", true, true, 0, true, 1, true);
 	cvarManager->registerCvar("steer_threshold", "0.1", "Threshold for steering to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_pitch_unpause", "1", "Enable pitch to unpause", true, true, 0, true, 1, true);
-	cvarManager->registerCvar("pitch_threshold", "0.1", "Threshold for pitch to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("pitch_threshold", "0.4", "Threshold for pitch to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_yaw_unpause", "1", "Enable yaw to unpause", true, true, 0, true, 1, true);
-	cvarManager->registerCvar("yaw_threshold", "0.1", "Threshold for yaw to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("yaw_threshold", "0.4", "Threshold for yaw to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_roll_unpause", "1", "Enable roll to unpause", true, true, 0, true, 1, true);
 	cvarManager->registerCvar("roll_threshold", "0.1", "Threshold for roll to unpause", true, true, 0, true, 1, true);
+
+	cvarManager->registerCvar("rewind_threshold", "0.2", "Threshold for steering to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_handbrake_unpause", "1", "Enable handbrake to unpause", true, true, 0, true, 1, true);
 	cvarManager->registerCvar("enable_jump_unpause", "1", "Enable jump to unpause", true, true, 0, true, 1, true);
@@ -660,9 +662,6 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 		}
 		if (cvarManager->getCvar(unpauseSetting).getBoolValue()) {
 			float effectiveThreshold = cvarManager->getCvar(thresholdSetting).getFloatValue();
-			if (axis == matchingAxis) {
-				effectiveThreshold = 0.9; // TODO customizable
-			}
 			if (fabs(axisValue) > effectiveThreshold) {
 				buttonsDown |= buttonBit;
 			}
@@ -731,7 +730,12 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 
 	// if you are trying to use the matching axis more than the rewind axis
 	// and you've haven't hit the threshold to unpause, don't rewind
-	if ((matchingAxis != "None" && fabs(matchingInput) > fabs(rewindInput)) || fabs(rewindInput) < 0.1) { // TODO customizable
+	if ((matchingAxis != "None" && fabs(matchingInput) > fabs(rewindInput))) {
+		deltaElapsed = 0;
+	}
+
+	// ensure minimum rewind value
+	if (fabs(rewindInput) < cvarManager->getCvar("rewind_threshold").getFloatValue()) {
 		deltaElapsed = 0;
 	}
 

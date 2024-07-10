@@ -108,6 +108,7 @@ void CheckpointPlugin::writeSettingsFile() {
 8|
 6|Rewind Input Method|rewind_axis|Steer@steer&Throttle@throttle&Pitch@pitch&Yaw@yaw&Roll@roll
 6|Rewind Input Matching Axis Bind|matching_axis|None@none&Steer@steer&Throttle@throttle&Pitch@pitch&Yaw@yaw&Roll@roll
+4|Rewind Threshold|rewind_threshold|0.0|1.0
 8|
 9|Rewind Unpause Actions Configuration:
 1|Throttle Unpauses|enable_throttle_unpause
