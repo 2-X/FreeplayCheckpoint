@@ -713,7 +713,8 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 
 	
 	// Ignore slight input; keep current game state.
-	if (abs(rewindInput) < cvarManager->getCvar("rewind_threshold").getFloatValue()) {
+	const float rewindThreshold = cvarManager->getCvar("rewind_threshold").getFloatValue();
+	if (abs(rewindInput) < rewindThreshold) {
 		return true; // Ignoring input; apply state.
 	}
 
@@ -727,10 +728,22 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	} else {
 		rewindState.holdingFor = 0;
 	}
+
+	// Normalize rewindInput based on the threshold
+	float excessInput = std::abs(rewindInput) - rewindThreshold;
+	float normalRewindInput;
+	if (excessInput > 0) {
+		// Normalize only if rewindInput exceeds the threshold
+		float normalizedInput = excessInput / (1.0 - rewindThreshold);
+		normalRewindInput = (rewindInput < 0 ? -1 : 1) * normalizedInput;
+	} else {
+		normalRewindInput = 0;  // No effective input if below threshold
+	}
+
 	float factor = std::clamp(abs(rewindState.holdingFor) * 2, 1.0f, 10.0f);
 
 	// How much (in seconds) to move "current" (positive or negative)
-	float deltaElapsed = factor * elapsed * rewindInput; // full left = 2-5 seconds/second
+	float deltaElapsed = factor * elapsed * normalRewindInput; // full left = 2-5 seconds/second
 
 	// if you are trying to use the matching axis more than the rewind axis
 	// and you've haven't hit the threshold to unpause, don't rewind
