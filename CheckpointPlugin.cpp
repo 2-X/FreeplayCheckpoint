@@ -711,11 +711,15 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	}
 	rewindState.buttonsDown = buttonsDown;
 
-	// Determine how much to rewind / advance time.
-	if (abs(rewindInput) < .05f) { // Ignore slight input; keep current game state.
+	
+	// Ignore slight input; keep current game state.
+	if (abs(rewindInput) < cvarManager->getCvar("rewind_threshold").getFloatValue()) {
 		return true; // Ignoring input; apply state.
 	}
+
 	rewindState.deleting = false;
+
+	// Determine how much to rewind / advance time.
 	if (rewindInput< -.95 && rewindState.holdingFor <= 0) {
 		rewindState.holdingFor -= elapsed;
 	} else if (rewindInput > .95 && rewindState.holdingFor >= 0) {
@@ -731,11 +735,6 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	// if you are trying to use the matching axis more than the rewind axis
 	// and you've haven't hit the threshold to unpause, don't rewind
 	if ((matchingAxis != "None" && fabs(matchingInput) > fabs(rewindInput))) {
-		deltaElapsed = 0;
-	}
-
-	// ensure minimum rewind value
-	if (fabs(rewindInput) < cvarManager->getCvar("rewind_threshold").getFloatValue()) {
 		deltaElapsed = 0;
 	}
 
