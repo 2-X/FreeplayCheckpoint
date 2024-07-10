@@ -660,8 +660,8 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 		}
 		if (cvarManager->getCvar(unpauseSetting).getBoolValue()) {
 			float effectiveThreshold = cvarManager->getCvar(thresholdSetting).getFloatValue();
-			if ((axis == matchingAxis) && isAtCheckpoint) {
-				effectiveThreshold = 0.9; 
+			if (axis == matchingAxis) {
+				effectiveThreshold = 0.9; // TODO customizable
 			}
 			if (fabs(axisValue) > effectiveThreshold) {
 				buttonsDown |= buttonBit;
@@ -731,7 +731,7 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 
 	// if you are trying to use the matching axis more than the rewind axis
 	// and you've haven't hit the threshold to unpause, don't rewind
-	if (matchingAxis != "None" && fabs(matchingInput) > fabs(rewindInput)) {
+	if ((matchingAxis != "None" && fabs(matchingInput) > fabs(rewindInput)) || fabs(rewindInput) < 0.1) { // TODO customizable
 		deltaElapsed = 0;
 	}
 
