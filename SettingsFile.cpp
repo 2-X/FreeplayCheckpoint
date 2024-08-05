@@ -100,15 +100,10 @@ void CheckpointPlugin::writeSettingsFile() {
 5|History Refresh Rate (ms)|cpt_snapshot_interval|1|10
 9|
 1|Debug -- Show debugging state|cpt_debug
-9|
-9|
-9| Freeplay Checkpoint
-9| Bugs/Feature Requests: github.com/NitrOP7674 -or- on Discord: https://discord.gg/SPBxrtfrZw
-9| ** Please make sure to read the README first! **
 8|
 6|Rewind Input Method|rewind_axis|Steer@steer&Throttle@throttle&Pitch@pitch&Yaw@yaw&Roll@roll
 6|Rewind Input Matching Axis Bind|matching_axis|None@none&Steer@steer&Throttle@throttle&Pitch@pitch&Yaw@yaw&Roll@roll
-4|Rewind Threshold|rewind_threshold|0.0|1.0
+1|Used to prevent accidentally leaving rewind mode due to slight input on the stick's other axis
 8|
 9|Rewind Unpause Actions Configuration:
 1|Throttle Unpauses|enable_throttle_unpause
@@ -121,10 +116,10 @@ void CheckpointPlugin::writeSettingsFile() {
 4|Yaw Threshold|yaw_threshold|0.0|1.0
 1|Roll Unpauses|enable_roll_unpause
 4|Roll Threshold|roll_threshold|0.0|1.0
-1|Handbrake Unpauses|enable_handbrake_unpause
-1|Jump Unpauses|enable_jump_unpause
-1|Boost Unpauses|enable_boost_activate_unpause
-1|Boost Hold Unpauses|enable_boost_hold_unpause
+8|
+9| Freeplay Checkpoint
+9| Bugs/Feature Requests: github.com/NitrOP7674 -or- on Discord: https://discord.gg/SPBxrtfrZw
+9| ** Please make sure to read the README first! **
 )";
 	setFile.close();
 	cvarManager->executeCommand("cl_settings_refreshplugins");

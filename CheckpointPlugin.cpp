@@ -135,7 +135,7 @@ void CheckpointPlugin::onLoad()
 	cvarManager->registerCvar("enable_roll_unpause", "1", "Enable roll to unpause", true, true, 0, true, 1, true);
 	cvarManager->registerCvar("roll_threshold", "0.1", "Threshold for roll to unpause", true, true, 0, true, 1, true);
 
-	cvarManager->registerCvar("rewind_threshold", "0.2", "Threshold for steering to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("rewind_threshold", "0.05", "Threshold for steering to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_handbrake_unpause", "1", "Enable handbrake to unpause", true, true, 0, true, 1, true);
 	cvarManager->registerCvar("enable_jump_unpause", "1", "Enable jump to unpause", true, true, 0, true, 1, true);
@@ -517,7 +517,7 @@ void CheckpointPlugin::doCheckpoint(std::vector<std::string> command) {
 		curCheckpoint = checkpoints.size();
 		checkpoints.push_back(latest);
 		saveCheckpointFile();
-		loadGameState(latest);
+		// loadGameState(latest);
 		rewindState.atCheckpoint = true;
 	}
 }
@@ -676,13 +676,13 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	checkAndSet("yaw", ci.Yaw, "enable_yaw_unpause", "yaw_threshold", 0x100);
 
 	// Directly check digital inputs without considering the "matching axis"
-	if (cvarManager->getCvar("enable_handbrake_unpause").getBoolValue() && ci.Handbrake)
+	if (ci.Handbrake)
 		buttonsDown |= 0x04;
-	if (cvarManager->getCvar("enable_jump_unpause").getBoolValue() && ci.Jump)
+	if (ci.Jump)
 		buttonsDown |= 0x08;
-	if (cvarManager->getCvar("enable_boost_activate_unpause").getBoolValue() && ci.ActivateBoost)
+	if (ci.ActivateBoost)
 		buttonsDown |= 0x10;
-	if (cvarManager->getCvar("enable_boost_hold_unpause").getBoolValue() && ci.HoldingBoost)
+	if (ci.HoldingBoost)
 		buttonsDown |= 0x20;
 
 	// See if we should exit rewind mode due to input.
@@ -721,7 +721,7 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	rewindState.deleting = false;
 
 	// Determine how much to rewind / advance time.
-	if (rewindInput< -.95 && rewindState.holdingFor <= 0) {
+	if (rewindInput < -.95 && rewindState.holdingFor <= 0) {
 		rewindState.holdingFor -= elapsed;
 	} else if (rewindInput > .95 && rewindState.holdingFor >= 0) {
 		rewindState.holdingFor += elapsed;
@@ -747,8 +747,12 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 
 	// if you are trying to use the matching axis more than the rewind axis
 	// and you've haven't hit the threshold to unpause, don't rewind
-	if ((matchingAxis != "None" && fabs(matchingInput) > fabs(rewindInput))) {
+	if ((matchingAxis != "None" && 2 * fabs(matchingInput) > fabs(rewindInput))) {
 		deltaElapsed = 0;
+	}
+
+	if (deltaElapsed != 0) {
+		rewindState.atCheckpoint = false;
 	}
 
 	rewindState.virtualTimeOffset = std::clamp(
