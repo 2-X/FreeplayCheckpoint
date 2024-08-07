@@ -121,21 +121,21 @@ void CheckpointPlugin::onLoad()
 
 	// Register CVars for action thresholds and enable/disable toggles
 	cvarManager->registerCvar("enable_throttle_unpause", "1", "Enable throttle to unpause", true, true, 0, true, 1, true);
-	cvarManager->registerCvar("throttle_threshold", "0.85", "Threshold for throttle to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("throttle_threshold", "0.1", "Threshold for throttle to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_steer_unpause", "0", "Enable steering to unpause", true, true, 0, true, 1, true);
 	cvarManager->registerCvar("steer_threshold", "0.1", "Threshold for steering to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_pitch_unpause", "1", "Enable pitch to unpause", true, true, 0, true, 1, true);
-	cvarManager->registerCvar("pitch_threshold", "0.4", "Threshold for pitch to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("pitch_threshold", "0.80", "Threshold for pitch to unpause", true, true, 0, true, 1, true);
 
-	cvarManager->registerCvar("enable_yaw_unpause", "1", "Enable yaw to unpause", true, true, 0, true, 1, true);
-	cvarManager->registerCvar("yaw_threshold", "0.4", "Threshold for yaw to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("enable_yaw_unpause", "0", "Enable yaw to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("yaw_threshold", "0.1", "Threshold for yaw to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_roll_unpause", "1", "Enable roll to unpause", true, true, 0, true, 1, true);
 	cvarManager->registerCvar("roll_threshold", "0.1", "Threshold for roll to unpause", true, true, 0, true, 1, true);
 
-	cvarManager->registerCvar("rewind_threshold", "0.05", "Threshold for steering to unpause", true, true, 0, true, 1, true);
+	cvarManager->registerCvar("rewind_threshold", "0.05", "Threshold for the rewind input to unpause", true, true, 0, true, 1, true);
 
 	cvarManager->registerCvar("enable_handbrake_unpause", "1", "Enable handbrake to unpause", true, true, 0, true, 1, true);
 	cvarManager->registerCvar("enable_jump_unpause", "1", "Enable jump to unpause", true, true, 0, true, 1, true);
@@ -144,7 +144,7 @@ void CheckpointPlugin::onLoad()
 
 
 	cvarManager->registerCvar("rewind_axis", "steer", "Input used for rewinding (steer, throttle, pitch, yaw, roll)");
-	cvarManager->registerCvar("matching_axis", "none", "Your bind that is on the same stick as the rewind input");
+	cvarManager->registerCvar("matching_axis", "pitch", "Your bind that is on the same stick as the rewind input");
 
 	// original cvars
 	cvarManager->registerCvar("cpt_allow_delete_all", "0", "Enables the delete all button", false, true, 0, true, 1, false);
@@ -716,6 +716,10 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	const float rewindThreshold = cvarManager->getCvar("rewind_threshold").getFloatValue();
 	if (abs(rewindInput) < rewindThreshold) {
 		return true; // Ignoring input; apply state.
+	} else if (isAtCheckpoint) {
+		log("checkpoint active, unpausing game instead of rewinding");
+		setFrozen(false, false);
+		return false;  // Unpausing the game due to checkpoint.
 	}
 
 	rewindState.deleting = false;
