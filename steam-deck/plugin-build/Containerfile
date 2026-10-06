@@ -1,0 +1,8 @@
+# clang-cl + lld-link + the MSVC CRT / Windows SDK (via xwin) for building
+# BakkesMod plugins (MSVC ABI, static CRT) on the Deck.
+FROM docker.io/library/alpine:3.24
+RUN apk add --no-cache clang lld llvm curl tar
+RUN curl -sSfL https://github.com/Jake-Shadle/xwin/releases/download/0.10.0/xwin-0.10.0-x86_64-unknown-linux-musl.tar.gz \
+      | tar xz -C /usr/local/bin --strip-components=1 xwin-0.10.0-x86_64-unknown-linux-musl/xwin \
+ && xwin --accept-license --arch x86_64 splat --output /xwin \
+ && rm -rf .xwin-cache /usr/local/bin/xwin

@@ -2,6 +2,8 @@
 ### Rewind, Save, and Restore Checkpoints in Freeplay, Replays, and Custom Training!
 <p align="center"><img src="banner.png" width="350"></p>
 
+**Steam Deck:** [`steam-deck/`](steam-deck/README.md) installs BakkesMod, this plugin and Nexto (RLBot) with one script, playable from Gaming Mode and without internet.
+
 **Setup:**
 
 1. Open bakkesmod window (F2 by default)

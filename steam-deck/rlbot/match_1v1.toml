@@ -1,0 +1,28 @@
+# You (blue) vs Nexto (orange). Standard 5-minute Soccar on DFH Stadium.
+[rlbot]
+launcher = "NoLaunch"         # play-nexto.sh launches Rocket League through Steam with -rlbot
+auto_start_agents = true
+wait_for_agents = true
+performance_monitor = "NeverShow"   # no RLBot tick-rate / bot status text in the top-left corner
+
+[match]
+game_mode = "Soccar"
+game_map_upk = "Stadium_P"
+skip_replays = false
+instant_start = false
+enable_rendering = "OffByDefault"
+enable_state_setting = true
+existing_match_behavior = "Restart"
+auto_save_replay = false
+
+[mutators]
+match_length = "FiveMinutes"
+overtime = "Unlimited"
+
+[[cars]]
+type = "Human"
+team = 0
+
+[[cars]]
+config_file = "NectoFamily/nexto/bot.toml"
+team = 1
