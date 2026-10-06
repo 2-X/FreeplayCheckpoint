@@ -94,6 +94,26 @@ ActorState ActorState::mirror() const {
 	return as;
 }
 
+// Unreal rotator units: 65536 per turn.  Half a turn more, kept in -32768..32767.
+static inline int halfTurn(int yaw) {
+	return (yaw & 0xFFFF) - 32768;
+}
+
+ActorState ActorState::flipSides() const {
+	// A half turn around the field's center (the vertical axis): X and Y change
+	// sign, Z stays; yaw turns half a turn, pitch and roll stay.  Angular
+	// velocity is a vector too and turns with the rest.
+	ActorState as = *this;
+	as.location.X *= -1;
+	as.location.Y *= -1;
+	as.velocity.X *= -1;
+	as.velocity.Y *= -1;
+	as.angVelocity.X *= -1;
+	as.angVelocity.Y *= -1;
+	as.rotation.Yaw = halfTurn(rotation.Yaw);
+	return as;
+}
+
 CarState::CarState() {
 	actorState = ActorState();
 	boostAmount = 0;
@@ -171,6 +191,12 @@ CarState CarState::mirror() const {
 	return cs;
 }
 
+CarState CarState::flipSides() const {
+	CarState cs = *this;
+	cs.actorState = cs.actorState.flipSides();
+	return cs;
+}
+
 bool isOfflineMatch(std::shared_ptr<GameWrapper> gw) {
 	return gw->IsInGame() && !gw->IsInOnlineGame() && !gw->IsInFreeplay() &&
 		!gw->IsInCustomTraining() && !gw->IsInReplay();
@@ -181,6 +207,15 @@ CarWrapper playerCar(std::shared_ptr<GameWrapper> gw) {
 		return gw->GetLocalCar();
 	}
 	return gw->GetGameEventAsServer().GetGameCar();
+}
+
+int playerTeam(std::shared_ptr<GameWrapper> gw) {
+	PlayerControllerWrapper pc = gw->GetPlayerController();
+	if (pc.IsNull() || pc.GetPRI().IsNull()) {
+		return -1;
+	}
+	unsigned char team = pc.GetPRI().GetTeamNum2();
+	return team > 1 ? -1 : int(team); // 255 while not on a team
 }
 
 // Every car but the local player's, in PRI order (stable for the whole match, unlike
@@ -224,6 +259,7 @@ bool matchTeamSizes(std::shared_ptr<GameWrapper> gw, int& own, int& opponents) {
 
 static void captureMatch(GameState& gs, std::shared_ptr<GameWrapper> gw) {
 	gs.time = gw->GetGameEventAsServer().GetGameTimeRemaining();
+	gs.team = playerTeam(gw);
 	for (auto& [ally, c] : otherCars(gw)) {
 		OtherCarState o;
 		o.ally = ally;
@@ -312,6 +348,7 @@ GameState::GameState(const GameState &lh, const GameState &rh, float percent) {
 		time = -1;
 	}
 	pads = rh.pads;
+	team = rh.team;
 	others = rh.others;
 	if (lh.others.size() == rh.others.size()) {
 		for (size_t i = 0; i < others.size(); i++) {
@@ -378,9 +415,36 @@ GameState GameState::mirror() const {
 	return gs;
 }
 
-GameState GameState::readMatch(std::istream& in, bool withPads) {
+GameState GameState::flipSides() const {
+	GameState gs = *this;
+	gs.car = car.flipSides();
+	gs.ball = ball.flipSides();
+	for (auto& o : gs.others) {
+		o.state = o.state.flipSides(); // teammates stay teammates
+	}
+	for (auto& p : gs.pads) {
+		// The pads are laid out point-symmetrically, so every pad lands on another.
+		p.location.X *= -1;
+		p.location.Y *= -1;
+	}
+	if (team >= 0) {
+		gs.team = 1 - team;
+	}
+	return gs;
+}
+
+// Match save file versions: 2 = clock + other cars, 3 = + boost pads, 4 = + team.
+constexpr uint32_t MATCH_VERSION_PADS = 3;
+constexpr uint32_t MATCH_VERSION_TEAM = 4;
+
+GameState GameState::readMatch(std::istream& in, uint32_t version) {
 	GameState gs(in);
 	readPOD(in, gs.time);
+	if (version >= MATCH_VERSION_TEAM) {
+		int8_t team = -1;
+		readPOD(in, team);
+		gs.team = team;
+	}
 	int32_t n = 0;
 	readPOD(in, n);
 	for (int32_t i = 0; i < n && in.good(); i++) {
@@ -390,7 +454,7 @@ GameState GameState::readMatch(std::istream& in, bool withPads) {
 		o.state = CarState(in);
 		gs.others.push_back(o);
 	}
-	if (withPads) {
+	if (version >= MATCH_VERSION_PADS) {
 		n = 0;
 		readPOD(in, n);
 		for (int32_t i = 0; i < n && in.good(); i++) {
@@ -406,6 +470,7 @@ GameState GameState::readMatch(std::istream& in, bool withPads) {
 void GameState::writeMatch(std::ostream& out) const {
 	write(out);
 	writePOD(out, time);
+	writePOD(out, int8_t(team));
 	auto n = int32_t(others.size());
 	writePOD(out, n);
 	for (auto& o : others) {

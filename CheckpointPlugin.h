@@ -68,6 +68,7 @@ class CheckpointPlugin : public BakkesMod::Plugin::BakkesModPlugin {
 	virtual void onLoad();
 	void copyShot(std::vector<std::string> command);
 	void mirrorState(std::vector<std::string> command);
+	void checkpointTeam(std::vector<std::string> command);
 	void deleteAllCheckpoints(std::vector<std::string> command);
 	void randCheckpoint(std::vector<std::string> command);
 	void pasteShot(std::vector<std::string> command);
@@ -128,6 +129,20 @@ private:
 	bool randomizeLoads = false;
 	bool showBoost = false;
 	bool matchEnabled = true;
+	// Never score while frozen / rewinding (scrubbing can carry the ball through the net).
+	bool noGoalsFrozen = true;
+	bool goalsSuppressed = false;   // we turned freeplay goal scoring off and must turn it back on
+	bool savedEnableGoal = true;    // its value before we did
+	// Offline matches: after resuming, hold the situation for a moment so bots (Nexto
+	// decides every 8 ticks from the current state and its own last actions) take the
+	// new situation in before physics runs. Otherwise a load that is very different
+	// from where play was has the bot acting on the old picture for its first moves.
+	int settleMs = 300;
+	bool settling = false;
+	float settleUntil = 0;
+	// Match checkpoints saved on the other team are loaded turned around, so the shot
+	// stays on the same side of the field relative to the player.
+	bool matchTeamAware = true;
 
 	void addBind(std::string key, std::string cmd);
 	void removeBind(std::string key, std::string cmd);
@@ -152,6 +167,8 @@ private:
 	void boolvar(std::string name, std::string desc, bool* var);
 	std::unique_ptr<GameState> getReplayGameState();
 	void setFrozen(bool car, bool ball);
+	void suppressGoals(bool on);
+	GameState keepBallOutOfGoal(const GameState& s);
 	void writeSettingsFile();
 	bool enabled();
 	bool enabledLoads();
@@ -161,6 +178,7 @@ private:
 	std::string currentStoreKey(bool match);
 	std::filesystem::path storeFile();
 	GameState forLoad(GameState s);
+	bool shownFlipped(const GameState& s);
 	void registerBoostPadHooks();
 	void noteBoostPad(ActorWrapper pad);
 	void forgetBoostPads();

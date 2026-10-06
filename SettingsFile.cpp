@@ -83,12 +83,17 @@ void CheckpointPlugin::writeSettingsFile() {
 1|Goal Scored|cpt_reset_on_goal
 1|Ball touches ground|cpt_reset_on_ball_ground
 1|Load next checkpoint instead of resetting|cpt_next_instead_of_reset
+9|
+1|Never score a goal while frozen / rewinding|cpt_no_goals_frozen
 8|
 9|
 9|Offline matches (exhibition / RLBot) -- every car is frozen, rewound and restored:
 8|
 1|Enable in offline matches|cpt_enable_match
 1|Restore boost pads (which are picked up and when they come back)|cpt_match_boost_pads
+5|Hold after resuming so bots take the new situation in (ms, 0 = off)|cpt_match_resume_settle_ms|0|1000
+1|Keep shots on your side: a shot saved on the other team is turned around (flipped)|cpt_match_team_aware
+9|Shots saved before this existed have no team ("team ?"): console cpt_checkpoint_team [flip|blue|orange] tags the loaded one
 9|Match Save File Name (every team size has its own file: name_1v1, name_2v2, ...):
 7|
 12||cpt_match_filename

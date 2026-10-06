@@ -107,7 +107,22 @@ and [RLBot](https://rlbot.org) matches (for example against Nexto). Never in onl
 - A load requested during a goal replay or the kickoff countdown is applied as soon
   as the round is live; **Auto-reset checkpoint** reloads after the kickoff.
 - Loads never leave less than a minute on the clock.
-- Turn it off with **Enable in offline matches** (`cpt_enable_match`).
+- After you resume, the situation is held for a moment (**Hold after resuming**,
+  `cpt_match_resume_settle_ms`, default 300 ms, 0 = off) so bots such as Nexto take
+  the new situation in before play starts. Nexto decides every 8 ticks from the
+  current state and its own recent actions, so a loaded shot that is very different
+  from where play was would otherwise have it acting on the old picture for its
+  first moves.
+- Checkpoints are **team-aware**: each one remembers the team you were on when you
+  saved it. Loading it in a later match where you are on the other color turns the
+  whole situation around (cars, ball, pads: a half turn around the center of the
+  field), so the shot is on the same side of the field *relative to you*. The overlay
+  shows `(flipped)` on such a load. Turn it off with **Keep shots on your side**
+  (`cpt_match_team_aware`). Checkpoints saved before this existed have no team
+  (`(team ?)` in the overlay) and load as they are; while one is loaded, the console
+  command `cpt_checkpoint_team` tags it with a team: no argument = the way it is
+  shown is right, `flip` = it should be the other way around, or `blue` / `orange`.
+- Turn it all off with **Enable in offline matches** (`cpt_enable_match`).
 
 **Checkpoint files per mode:**
 
@@ -120,6 +135,15 @@ Each mode keeps its own checkpoints, so a shot saved on one map never shows up o
 | Offline match, N vs M          | `<Match Save File Name>_<N>v<M>.data`       |
 
 The team size is counted with your own team first (`2v1` = you and a teammate against one bot).
+
+**No goals while frozen / rewinding:**
+
+Scrubbing through history can carry the ball through the net, and the game would
+count it. With **Never score a goal while frozen / rewinding** (`cpt_no_goals_frozen`,
+on by default) that can't happen: in freeplay BakkesMod's goal scoring is switched
+off while you are frozen and restored when you resume; in offline matches the ball is
+held just outside the goal line while scrubbing (the recorded state is untouched, so
+resuming at a moment where the ball is in the net still scores, as it should).
 
 **Ball in front:**
 

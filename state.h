@@ -26,6 +26,9 @@ public:
 	void write(std::ostream& out) const;
 	void apply(ActorWrapper a) const;
 	ActorState mirror() const;
+	// The same situation seen from the other end of the field (turned half a turn
+	// around the center): what a shot saved on one team is on the other team.
+	ActorState flipSides() const;
 };
 
 class CarState {
@@ -45,6 +48,7 @@ public:
 	void write(std::ostream& out) const;
 	void apply(CarWrapper c, bool showBoost) const;
 	CarState mirror() const;
+	CarState flipSides() const;
 };
 
 // Another car in an offline match (bot or other player), relative to the local player.
@@ -69,6 +73,8 @@ bool isOfflineMatch(std::shared_ptr<GameWrapper> gw);
 bool matchTeamSizes(std::shared_ptr<GameWrapper> gw, int& own, int& opponents);
 // The car driven by the local player: freeplay's car, or the human's car in a match.
 CarWrapper playerCar(std::shared_ptr<GameWrapper> gw);
+// The local player's team: 0 blue, 1 orange, -1 while not on a team.
+int playerTeam(std::shared_ptr<GameWrapper> gw);
 
 class GameState {
 public:
@@ -77,6 +83,10 @@ public:
 	float time; // -1 if not in a timed mode
 	std::vector<OtherCarState> others; // offline matches only: every car but the local player's
 	std::vector<PadState> pads;        // offline matches only: the boost pads that are picked up
+	// Offline matches only: the team (0 blue, 1 orange) whose side of the field this
+	// state is seen from - the local player's team when it was captured.  -1 when
+	// unknown (freeplay, and match checkpoints saved before this was recorded).
+	int team = -1;
 
 	GameState();
 	GameState(std::shared_ptr<GameWrapper> gw);
@@ -87,10 +97,13 @@ public:
 	GameState(std::string str);
 
 	void write(std::ostream& out) const;
-	// Match checkpoints: also carry the clock and the other cars.
-	static GameState readMatch(std::istream& in, bool withPads);
+	// Match checkpoints: also carry the clock, the team, the other cars and the pads
+	// (version: the match save file version, which says which of these are there).
+	static GameState readMatch(std::istream& in, uint32_t version);
 	void writeMatch(std::ostream& out) const;
 	void apply(std::shared_ptr<GameWrapper> gw, bool showBoost) const;
 	const std::string toString() const;
 	GameState mirror() const;
+	// The whole situation turned around to the other team's side (see ActorState).
+	GameState flipSides() const;
 };

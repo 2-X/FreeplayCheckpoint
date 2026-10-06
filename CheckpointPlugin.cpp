@@ -87,10 +87,83 @@ std::unique_ptr<GameState> CheckpointPlugin::getReplayGameState() {
 	return nullptr;
 }
 
+// While frozen / rewinding, scrubbing through history can carry the ball through a goal,
+// and the game would score it even though nothing is being played. In freeplay BakkesMod's
+// own goal scoring switch (sv_soccar_enablegoal) is turned off for the duration and put
+// back afterwards; in offline matches there is no such switch, so keepBallOutOfGoal()
+// holds the physical ball just outside the goal while scrubbing instead.
+void CheckpointPlugin::suppressGoals(bool on) {
+	if (on == goalsSuppressed) {
+		return;
+	}
+	if (inMatch() && on) {
+		return; // handled by keepBallOutOfGoal() in the rewind tick
+	}
+	CVarWrapper cv = cvarManager->getCvar("sv_soccar_enablegoal");
+	if (cv.IsNull()) {
+		return;
+	}
+	if (on) {
+		savedEnableGoal = cv.getBoolValue();
+		if (!savedEnableGoal) {
+			return; // already off (as the README recommends); nothing to restore later
+		}
+		cv.setValue(false);
+	} else {
+		cv.setValue(savedEnableGoal);
+	}
+	goalsSuppressed = on;
+}
+
+// The state to show while scrubbing an offline match: if the ball is inside a goal,
+// keep it just outside the goal line so the game never registers a goal. The true
+// state (`latest`) is untouched - resuming play applies it as recorded.
+GameState CheckpointPlugin::keepBallOutOfGoal(const GameState& s) {
+	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
+	if (sw.IsNull() || !sw.IsInGoal(s.ball.location)) {
+		return s;
+	}
+	GameState shown = s;
+	// Goal lines are at |Y| = 5120; the ball (radius ~93) is "in" once its centre is past
+	// the line. Hold its centre a ball's width in front of the line.
+	float limit = 5120.f - 100.f;
+	if (shown.ball.location.Y > limit) {
+		shown.ball.location.Y = limit;
+	} else if (shown.ball.location.Y < -limit) {
+		shown.ball.location.Y = -limit;
+	}
+	shown.ball.velocity = Vector(0, 0, 0);
+	return shown;
+}
+
 void CheckpointPlugin::setFrozen(bool car, bool ball) {
 	if (rewindMode && !car) {
 		// Play resumes from `latest`: the pads follow, including what happened to them while frozen.
 		applyBoostPads(latest);
+		if (!ball && noGoalsFrozen && inMatch()) {
+			// While scrubbing a match the shown ball may have been held outside the goal;
+			// resuming must start from the ball as actually recorded.
+			ServerWrapper sw = gameWrapper->GetGameEventAsServer();
+			if (!sw.IsNull() && !sw.GetBall().IsNull()) {
+				latest.ball.apply(sw.GetBall());
+			}
+		}
+		if (!ball && inMatch() && settleMs > 0) {
+			// Hold the resumed situation briefly so the bots act on it, not on where
+			// play was before the load (see settleMs).
+			ServerWrapper sw = gameWrapper->GetGameEventAsServer();
+			if (!sw.IsNull()) {
+				settling = true;
+				settleUntil = sw.GetSecondsElapsed() + settleMs / 1000.f;
+			}
+		}
+	}
+	if (noGoalsFrozen) {
+		if (car && !rewindMode) {
+			suppressGoals(true);
+		} else if (!car && rewindMode) {
+			suppressGoals(false);
+		}
 	}
 	rewindMode = car;
 	freezeBall = ball;
@@ -103,6 +176,7 @@ void CheckpointPlugin::onLoad()
 	boolvar("cpt_clean_history", "If set, deletes history after the current point when exiting rewind mode", &deleteFutureHistory);
 
 	boolvar("cpt_reset_on_goal", "If set, restore last resumed checkpoint when scoring a goal", &resetOnGoal);
+	boolvar("cpt_no_goals_frozen", "If set, a goal can never be scored while frozen / rewinding", &noGoalsFrozen);
 	boolvar("cpt_reset_on_ball_ground", "If set, restore last resumed checkpoint when ball touches ground", &resetOnBallGround);
 	boolvar("cpt_next_instead_of_reset", "If set, load next checkpoint instead of resetting", &nextInsteadOfReset);
 
@@ -131,9 +205,17 @@ void CheckpointPlugin::onLoad()
 	matchCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
 		matchEnabled = now.getBoolValue();
 	});
+	auto settleCV = cvarManager->registerCvar("cpt_match_resume_settle_ms", "300", "Offline matches: hold the situation this long after resuming so bots take it in before play starts (0 = off)", true, true, 0, true, 1000);
+	settleCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
+		settleMs = now.getIntValue();
+	});
 	auto padsCV = cvarManager->registerCvar("cpt_match_boost_pads", "1", "If set, boost pads are restored with the rest of the situation in offline matches", true, true, 0, true, 1);
 	padsCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
 		restorePads = now.getBoolValue();
+	});
+	auto teamCV = cvarManager->registerCvar("cpt_match_team_aware", "1", "If set, a match checkpoint saved on the other team is loaded turned around, so the shot stays on your side of the field", true, true, 0, true, 1);
+	teamCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
+		matchTeamAware = now.getBoolValue();
 	});
 	registerBoostPadHooks();
 
@@ -290,6 +372,7 @@ void CheckpointPlugin::onLoad()
 	cvarManager->registerNotifier("cpt_rand_checkpoint", std::bind(&CheckpointPlugin::randCheckpoint, this, _1), "Restores a random saved checkpoint", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_delete_all", std::bind(&CheckpointPlugin::deleteAllCheckpoints, this, _1), "Deletes ALL checkpoints", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_mirror_state", std::bind(&CheckpointPlugin::mirrorState, this, _1), "Mirrors the current frozen state", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_checkpoint_team", std::bind(&CheckpointPlugin::checkpointTeam, this, _1), "Tags the loaded match checkpoint with the team it was saved on: no argument = as shown, flip = the other way around, or blue / orange", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_freeze_ball", std::bind(&CheckpointPlugin::freezeBallUnfreezeCar, this, _1), "Freezes/unfreezes the ball", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_ball_in_front", std::bind(&CheckpointPlugin::ballInFront, this, _1), "Puts the ball in front of your car", PERMISSION_ALL);
 	cvarManager->registerCvar("cpt_ball_front_distance", "200", "How far ahead of the car cpt_ball_in_front puts the ball", true, true, 150, true, 1500, true);
@@ -464,10 +547,34 @@ void CheckpointPlugin::syncStore() {
 	cvarManager->log("Freeplay Checkpoint: " + mode + ", using its checkpoints (" + std::to_string(checkpoints.size()) + ")");
 }
 
+// True when the stored match checkpoint s is loaded turned around: it was saved on
+// the other team.
+bool CheckpointPlugin::shownFlipped(const GameState& s) {
+	if (!matchTeamAware || !inMatch() || s.team < 0) {
+		return false;
+	}
+	int team = playerTeam(gameWrapper);
+	return team >= 0 && s.team != team;
+}
+
 // A stored checkpoint as it should be loaded now.
 GameState CheckpointPlugin::forLoad(GameState s) {
-	if (inMatch() && s.time >= 0 && s.time < MATCH_MIN_LOAD_TIME) {
+	if (!inMatch()) {
+		return s;
+	}
+	if (s.time >= 0 && s.time < MATCH_MIN_LOAD_TIME) {
 		s.time = MATCH_MIN_LOAD_TIME;
+	}
+	// Saved while on the other team: turn the whole situation around, so it is
+	// on the same side of the field relative to the player as when it was saved.
+	if (shownFlipped(s)) {
+		s = s.flipSides();
+	}
+	// Whatever it was, it is now the situation as seen from this team; a checkpoint
+	// saved from it (after rewinding or changing it) carries the right team.
+	int team = playerTeam(gameWrapper);
+	if (team >= 0) {
+		s.team = team;
 	}
 	return s;
 }
@@ -644,6 +751,39 @@ void CheckpointPlugin::mirrorState(std::vector<std::string> command) {
 	loadLatestCheckpoint();
 }
 
+// cpt_checkpoint_team [flip|blue|orange]: tags the loaded match checkpoint with the
+// team it was saved on.  Checkpoints saved before the team was recorded have no team
+// and are loaded as they are; with no argument the checkpoint is tagged the way it
+// is shown right now (that is the correct side), "flip" tags it the other way around.
+void CheckpointPlugin::checkpointTeam(std::vector<std::string> command) {
+	if (!enabledLoads() || !inMatch() || !rewindMode || !rewindState.atCheckpoint || curCheckpoint >= checkpoints.size()) {
+		cvarManager->log("cpt_checkpoint_team: load a match checkpoint first (frozen, at a checkpoint)");
+		return;
+	}
+	int mine = playerTeam(gameWrapper);
+	if (mine < 0) {
+		cvarManager->log("cpt_checkpoint_team: you are not on a team");
+		return;
+	}
+	GameState& cp = checkpoints[curCheckpoint];
+	bool flipped = shownFlipped(cp);
+	std::string arg = command.size() > 1 ? lower(command[1]) : "";
+	int team;
+	if (arg == "blue" || arg == "0") {
+		team = 0;
+	} else if (arg == "orange" || arg == "1") {
+		team = 1;
+	} else if (arg == "flip" || arg == "other") {
+		team = flipped ? mine : 1 - mine;   // shown the other way around from now on
+	} else {
+		team = flipped ? 1 - mine : mine;   // as shown
+	}
+	cp.team = team;
+	saveCheckpointFile();
+	cvarManager->log("checkpoint " + std::to_string(curCheckpoint + 1) + " is a " + (team == 0 ? "blue" : "orange") + " team shot now");
+	loadCurCheckpoint();
+}
+
 void CheckpointPlugin::deleteAllCheckpoints(std::vector<std::string> command) {
 	if (!cvarManager->getCvar("cpt_allow_delete_all").getBoolValue()) {
 		return;
@@ -785,6 +925,7 @@ void CheckpointPlugin::registerVarianceCVars() {
 }
 
 void CheckpointPlugin::onUnload() {
+	suppressGoals(false); // never leave freeplay goal scoring switched off behind us
 }
 
 void CheckpointPlugin::loadLatestCheckpoint() {
@@ -831,12 +972,20 @@ void CheckpointPlugin::loadGameState(const GameState& state) {
 		return;
 	}
 	pendingMatchLoad = false;
+	settling = false; // a new load supersedes any settle in progress
 	latest = state;
 	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
 	if (!inMatch() && cvarManager->getCvar("sv_soccar_enablegoal").getBoolValue()) {
 		sw.PlayerResetTraining(); // In case a goal was just scored, there may be no ball.
 	}
-	latest.apply(gameWrapper, false);
+	if (noGoalsFrozen) {
+		suppressGoals(true); // before the state lands: the loaded ball may be in the net
+	}
+	if (noGoalsFrozen && inMatch()) {
+		keepBallOutOfGoal(latest).apply(gameWrapper, false);
+	} else {
+		latest.apply(gameWrapper, false);
+	}
 	applyBoostPads(latest);
 	padSettleTicks = 3;
 	rewindState.virtualTimeOffset = 0;
@@ -873,6 +1022,15 @@ void CheckpointPlugin::OnPreAsync(std::string funcName)
 		}
 	}
 
+	if (settling) {
+		// Just resumed in a match: hold the resumed situation for settleMs so the bots
+		// get a few decision cycles on it before anything moves (see settleMs).
+		if (match && sw.GetSecondsElapsed() < settleUntil) {
+			latest.apply(gameWrapper, showBoost);
+			return;
+		}
+		settling = false;
+	}
 	if (rewindMode) {
 		if (padSettleTicks > 0 && --padSettleTicks == 0) {
 			// A car that stood on a pad when the state was loaded may have taken it
@@ -880,7 +1038,11 @@ void CheckpointPlugin::OnPreAsync(std::string funcName)
 			applyBoostPads(latest);
 		}
 		if (rewind(sw)) {
-			applyVariance(latest).apply(gameWrapper, showBoost);
+			GameState shown = applyVariance(latest);
+			if (noGoalsFrozen && inMatch()) {
+				shown = keepBallOutOfGoal(shown); // scrubbing must never put the ball in the net
+			}
+			shown.apply(gameWrapper, showBoost);
 		}
 	} else {
 		record(sw);
@@ -1184,6 +1346,14 @@ void CheckpointPlugin::Render(CanvasWrapper canvas) {
 		if (locks.size() > curCheckpoint && locks[curCheckpoint]) {
 			l = " (L)";
 		}
+		if (matchStoreActive && curCheckpoint < checkpoints.size()) {
+			const GameState& cp = checkpoints[curCheckpoint];
+			if (cp.team < 0) {
+				l += " (team ?)";   // saved before teams were recorded: cpt_checkpoint_team
+			} else if (shownFlipped(cp)) {
+				l += " (flipped)";  // saved on the other team, turned around for this one
+			}
+		}
 		Vector2 loc = { (int)(screenSize.X * 0.80), (int)(screenSize.Y * 0.08) };
 		canvas.SetPosition(loc + Vector2{ 5,5 });
 		canvas.SetColor(0, 0, 0, 100);
@@ -1201,9 +1371,9 @@ void CheckpointPlugin::Render(CanvasWrapper canvas) {
 // Prevent loading an unknown version's save file.
 constexpr uint32_t SAVE_FILE_VERSION = 1;
 // Match checkpoints hold a variable number of cars; they use their own file and version.
-// Version 3 added the boost pads.
-constexpr uint32_t MATCH_SAVE_FILE_VERSION = 3;
-constexpr uint32_t MATCH_SAVE_FILE_VERSION_NO_PADS = 2;
+// Version 3 added the boost pads, version 4 the team the checkpoint was saved on.
+constexpr uint32_t MATCH_SAVE_FILE_VERSION = 4;
+constexpr uint32_t MATCH_SAVE_FILE_VERSION_OLDEST = 2;
 
 void CheckpointPlugin::loadCheckpointFile() {
 	checkpoints.clear();
@@ -1219,7 +1389,7 @@ void CheckpointPlugin::loadCheckpointFile() {
 	std::ifstream in(file, std::ios::binary);
 	uint32_t version = 0;
 	readPOD(in, version);
-	if (matchStoreActive ? (version != MATCH_SAVE_FILE_VERSION && version != MATCH_SAVE_FILE_VERSION_NO_PADS) : version != SAVE_FILE_VERSION) {
+	if (matchStoreActive ? (version < MATCH_SAVE_FILE_VERSION_OLDEST || version > MATCH_SAVE_FILE_VERSION) : version != SAVE_FILE_VERSION) {
 		in.close();
 		log("could not load save file with version " + std::to_string(version));
 		return;
@@ -1228,7 +1398,7 @@ void CheckpointPlugin::loadCheckpointFile() {
 	readPOD(in, numSaves);
 	for (int32_t i = 0; i < numSaves; i++) {
 		if (matchStoreActive) {
-			checkpoints.push_back(GameState::readMatch(in, version >= MATCH_SAVE_FILE_VERSION));
+			checkpoints.push_back(GameState::readMatch(in, version));
 		} else {
 			checkpoints.emplace_back(in);
 		}
