@@ -36,6 +36,9 @@
     <ClCompile Include="boostpads.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="botcamera.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="state.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

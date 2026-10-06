@@ -218,6 +218,7 @@ void CheckpointPlugin::onLoad()
 		matchTeamAware = now.getBoolValue();
 	});
 	registerBoostPadHooks();
+	registerBotCameraHooks();
 
 	// Register CVars for action thresholds and enable/disable toggles
 	cvarManager->registerCvar("enable_throttle_unpause", "1", "Enable throttle to unpause", true, true, 0, true, 1, true);
@@ -373,6 +374,7 @@ void CheckpointPlugin::onLoad()
 	cvarManager->registerNotifier("cpt_delete_all", std::bind(&CheckpointPlugin::deleteAllCheckpoints, this, _1), "Deletes ALL checkpoints", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_mirror_state", std::bind(&CheckpointPlugin::mirrorState, this, _1), "Mirrors the current frozen state", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_checkpoint_team", std::bind(&CheckpointPlugin::checkpointTeam, this, _1), "Tags the loaded match checkpoint with the team it was saved on: no argument = as shown, flip = the other way around, or blue / orange", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_checkpoint_team_all", std::bind(&CheckpointPlugin::checkpointTeamAll, this, _1), "Tags every match checkpoint of this mode that has no team yet (team ?) with blue / orange; add 'force' to re-tag all of them", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_freeze_ball", std::bind(&CheckpointPlugin::freezeBallUnfreezeCar, this, _1), "Freezes/unfreezes the ball", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_ball_in_front", std::bind(&CheckpointPlugin::ballInFront, this, _1), "Puts the ball in front of your car", PERMISSION_ALL);
 	cvarManager->registerCvar("cpt_ball_front_distance", "200", "How far ahead of the car cpt_ball_in_front puts the ball", true, true, 150, true, 1500, true);
@@ -782,6 +784,42 @@ void CheckpointPlugin::checkpointTeam(std::vector<std::string> command) {
 	saveCheckpointFile();
 	cvarManager->log("checkpoint " + std::to_string(curCheckpoint + 1) + " is a " + (team == 0 ? "blue" : "orange") + " team shot now");
 	loadCurCheckpoint();
+}
+
+// cpt_checkpoint_team_all blue|orange [force]: tags every checkpoint of the current
+// match mode that has no team yet (saved before teams were recorded) with that team;
+// with "force" also the ones that already have one.  For a whole file of old shots
+// that were all saved on the same team.
+void CheckpointPlugin::checkpointTeamAll(std::vector<std::string> command) {
+	if (!inMatch()) {
+		cvarManager->log("cpt_checkpoint_team_all: only in an offline match (its checkpoints are tagged)");
+		return;
+	}
+	std::string arg = command.size() > 1 ? lower(command[1]) : "";
+	int team;
+	if (arg == "blue" || arg == "0") {
+		team = 0;
+	} else if (arg == "orange" || arg == "1") {
+		team = 1;
+	} else {
+		cvarManager->log("usage: cpt_checkpoint_team_all blue|orange [force]");
+		return;
+	}
+	bool force = command.size() > 2 && lower(command[2]) == "force";
+	int tagged = 0;
+	for (auto& cp : checkpoints) {
+		if (cp.team < 0 || force) {
+			cp.team = team;
+			tagged++;
+		}
+	}
+	if (tagged > 0) {
+		saveCheckpointFile();
+	}
+	cvarManager->log(std::to_string(tagged) + " of " + std::to_string(checkpoints.size()) + " checkpoints tagged as " + (team == 0 ? "blue" : "orange") + " team shots" + (tagged ? "" : " (nothing to do)"));
+	if (tagged > 0 && rewindMode && rewindState.atCheckpoint && curCheckpoint < checkpoints.size()) {
+		loadCurCheckpoint();
+	}
 }
 
 void CheckpointPlugin::deleteAllCheckpoints(std::vector<std::string> command) {
@@ -1285,6 +1323,9 @@ void CheckpointPlugin::record(ServerWrapper sw)
 		history.emplace_back(gameWrapper);
 	} else {
 		history.emplace_back(gameWrapper, MAX_DODGE_TIME - currentTime + dodgeExpiration);
+	}
+	if (botCamera && inMatch()) {
+		pollBotCamera(std::min(elapsed, 0.1f));
 	}
 	if (restorePads && inMatch()) {
 		pollBoostPads(std::min(elapsed, 0.1f));

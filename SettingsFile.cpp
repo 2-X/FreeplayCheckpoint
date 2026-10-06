@@ -93,6 +93,7 @@ void CheckpointPlugin::writeSettingsFile() {
 1|Restore boost pads (which are picked up and when they come back)|cpt_match_boost_pads
 5|Hold after resuming so bots take the new situation in (ms, 0 = off)|cpt_match_resume_settle_ms|0|1000
 1|Keep shots on your side: a shot saved on the other team is turned around (flipped)|cpt_match_team_aware
+1|Bots use your camera settings (when you spectate a bot or watch a goal replay from its car)|cpt_match_bot_camera
 9|Shots saved before this existed have no team ("team ?"): console cpt_checkpoint_team [flip|blue|orange] tags the loaded one
 9|Match Save File Name (every team size has its own file: name_1v1, name_2v2, ...):
 7|

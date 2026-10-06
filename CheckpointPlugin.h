@@ -69,6 +69,7 @@ class CheckpointPlugin : public BakkesMod::Plugin::BakkesModPlugin {
 	void copyShot(std::vector<std::string> command);
 	void mirrorState(std::vector<std::string> command);
 	void checkpointTeam(std::vector<std::string> command);
+	void checkpointTeamAll(std::vector<std::string> command);
 	void deleteAllCheckpoints(std::vector<std::string> command);
 	void randCheckpoint(std::vector<std::string> command);
 	void pasteShot(std::vector<std::string> command);
@@ -143,6 +144,11 @@ private:
 	// Match checkpoints saved on the other team are loaded turned around, so the shot
 	// stays on the same side of the field relative to the player.
 	bool matchTeamAware = true;
+	// Offline matches: bots get the local player's camera settings (see botcamera.cpp).
+	bool botCamera = true;
+	bool botCameraValid = false;           // botCameraApplied holds what the bots were last given
+	ProfileCameraSettings botCameraApplied{};
+	float botCameraPollIn = 0;
 
 	void addBind(std::string key, std::string cmd);
 	void removeBind(std::string key, std::string cmd);
@@ -180,6 +186,9 @@ private:
 	GameState forLoad(GameState s);
 	bool shownFlipped(const GameState& s);
 	void registerBoostPadHooks();
+	void registerBotCameraHooks();
+	void pollBotCamera(float elapsed);
+	void copyCameraToBots(bool force);
 	void noteBoostPad(ActorWrapper pad);
 	void forgetBoostPads();
 	void pollBoostPads(float elapsed);

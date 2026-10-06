@@ -104,6 +104,7 @@
   <ItemGroup>
     <ClCompile Include="bindings.cpp" />
     <ClCompile Include="boostpads.cpp" />
+    <ClCompile Include="botcamera.cpp" />
     <ClCompile Include="fmt\src\format.cc" />
     <ClCompile Include="fmt\src\os.cc" />
     <ClCompile Include="geometry.cpp" />

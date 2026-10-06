@@ -122,6 +122,15 @@ and [RLBot](https://rlbot.org) matches (for example against Nexto). Never in onl
   (`(team ?)` in the overlay) and load as they are; while one is loaded, the console
   command `cpt_checkpoint_team` tags it with a team: no argument = the way it is
   shown is right, `flip` = it should be the other way around, or `blue` / `orange`.
+  `cpt_checkpoint_team_all blue|orange` tags every untagged checkpoint of the current
+  mode at once (add `force` to re-tag all of them) - for a file of old shots that were
+  all saved on the same team.
+- Bots get **your camera settings** (**Bots use your camera settings**,
+  `cpt_match_bot_camera`): spectating a bot or watching a goal replay from its car
+  uses your FOV, distance, height, angle, stiffness, swivel and transition speed
+  instead of the game's defaults. Applied at every kickoff and whenever you change
+  your settings mid-match; `cpt_copy_camera_to_bots` in the console applies it now.
+  RLBot itself has no camera options, so this is the only way to get it.
 - Turn it all off with **Enable in offline matches** (`cpt_enable_match`).
 
 **Checkpoint files per mode:**
