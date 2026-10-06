@@ -93,6 +93,39 @@ Note: assumes default bindings from above.
   - **Debug**:
     - Shows some additional debugging data.  Probably not useful.
     
+**Offline Matches (exhibition / RLBot bots):**
+
+The plugin also works in offline matches: exhibition games against the game's bots
+and [RLBot](https://rlbot.org) matches (for example against Nexto). Never in online games.
+
+- Freezing, rewinding and loading a checkpoint applies to *every* car on the field,
+  not just yours; the match clock is restored too.
+- Boost pads are part of a checkpoint: which pads are picked up and when they come
+  back is saved and restored (**Restore boost pads** in the settings).
+- A load requested during a goal replay or the kickoff countdown is applied as soon
+  as the round is live; **Auto-reset checkpoint** reloads after the kickoff.
+- Loads never leave less than a minute on the clock.
+- Turn it off with **Enable in offline matches** (`cpt_enable_match`).
+
+**Checkpoint files per mode:**
+
+Each mode keeps its own checkpoints, so a shot saved on one map never shows up on another:
+
+| Where you are                  | File (in `bakkesmod/data/`)                 |
+|--------------------------------|---------------------------------------------|
+| Freeplay on a stock arena      | `<Save File Name>.data`                     |
+| Freeplay on a workshop map     | `<Save File Name>_map_<map name>.data`      |
+| Offline match, N vs M          | `<Match Save File Name>_<N>v<M>.data`       |
+
+The team size is counted with your own team first (`2v1` = you and a teammate against one bot).
+
+**Ball in front:**
+
+- `cpt_ball_in_front`: puts the ball a set distance ahead of your car, moving with it
+  (like the stock `ballontop`, but with a configurable distance:
+  **Distance ahead of the car** / `cpt_ball_front_distance`, 150-1500). Freeplay and offline
+  matches. Bind it to a button in the Bindings tab.
+
 **Other CVars**
 - `cpt_car_frozen`/`cpt_ball_frozen`:
   - These are set by this plugin whenever the car or ball or both are frozen in freeplay.

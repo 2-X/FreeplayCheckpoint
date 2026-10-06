@@ -85,9 +85,23 @@ void CheckpointPlugin::writeSettingsFile() {
 1|Load next checkpoint instead of resetting|cpt_next_instead_of_reset
 8|
 9|
+9|Offline matches (exhibition / RLBot) -- every car is frozen, rewound and restored:
+8|
+1|Enable in offline matches|cpt_enable_match
+1|Restore boost pads (which are picked up and when they come back)|cpt_match_boost_pads
+9|Match Save File Name (every team size has its own file: name_1v1, name_2v2, ...):
+7|
+12||cpt_match_filename
+8|
+9|
+9|Ball in front of the car (like ballontop): command cpt_ball_in_front, bind it to a button in the Bindings tab
+8|
+5|Distance ahead of the car|cpt_ball_front_distance|150|1500
+8|
+9|
 9|Other options:
 8|
-9|Save File Name:
+9|Save File Name (every workshop map has its own file: name_map_mapname):
 7|
 12||cpt_filename
 0|Delete ALL Shots (even locked shots; not undo-able!)|cpt_delete_all
@@ -105,7 +119,7 @@ void CheckpointPlugin::writeSettingsFile() {
 6|Rewind Input Matching Axis Bind|matching_axis|None@none&Steer@steer&Throttle@throttle&Pitch@pitch&Yaw@yaw&Roll@roll
 9|Used to prevent accidentally leaving rewind mode due to slight input on the stick's other axis
 8|
-9|Rewind Unpause Actions Configuration:
+9|Rewind Unpause Actions Configuration (the rewind input itself only unpauses at a loaded checkpoint):
 1|Throttle Unpauses|enable_throttle_unpause
 4|Throttle Threshold|throttle_threshold|0.0|1.0
 1|Steer Unpauses|enable_steer_unpause

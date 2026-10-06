@@ -171,6 +171,70 @@ CarState CarState::mirror() const {
 	return cs;
 }
 
+bool isOfflineMatch(std::shared_ptr<GameWrapper> gw) {
+	return gw->IsInGame() && !gw->IsInOnlineGame() && !gw->IsInFreeplay() &&
+		!gw->IsInCustomTraining() && !gw->IsInReplay();
+}
+
+CarWrapper playerCar(std::shared_ptr<GameWrapper> gw) {
+	if (isOfflineMatch(gw)) {
+		return gw->GetLocalCar();
+	}
+	return gw->GetGameEventAsServer().GetGameCar();
+}
+
+// Every car but the local player's, in PRI order (stable for the whole match, unlike
+// the car list, which changes on demolitions).  The car is null while demolished.
+static std::vector<std::pair<bool, CarWrapper>> otherCars(std::shared_ptr<GameWrapper> gw) {
+	std::vector<std::pair<bool, CarWrapper>> out;
+	ServerWrapper sw = gw->GetGameEventAsServer();
+	PlayerControllerWrapper pc = gw->GetPlayerController();
+	if (sw.IsNull() || pc.IsNull()) {
+		return out;
+	}
+	PriWrapper myPri = pc.GetPRI();
+	if (myPri.IsNull()) {
+		return out;
+	}
+	unsigned char myTeam = myPri.GetTeamNum2();
+	ArrayWrapper<PriWrapper> pris = sw.GetPRIs();
+	for (int i = 0; i < pris.Count(); i++) {
+		PriWrapper pri = pris.Get(i);
+		if (pri.IsNull() || pri.memory_address == myPri.memory_address || pri.IsSpectator()) {
+			continue;
+		}
+		out.emplace_back(pri.GetTeamNum2() == myTeam, pri.GetCar());
+	}
+	return out;
+}
+
+bool matchTeamSizes(std::shared_ptr<GameWrapper> gw, int& own, int& opponents) {
+	ServerWrapper sw = gw->GetGameEventAsServer();
+	PlayerControllerWrapper pc = gw->GetPlayerController();
+	if (sw.IsNull() || pc.IsNull() || pc.GetPRI().IsNull()) {
+		return false;
+	}
+	own = 1;
+	opponents = 0;
+	for (auto& [ally, c] : otherCars(gw)) {
+		(ally ? own : opponents)++;
+	}
+	return true;
+}
+
+static void captureMatch(GameState& gs, std::shared_ptr<GameWrapper> gw) {
+	gs.time = gw->GetGameEventAsServer().GetGameTimeRemaining();
+	for (auto& [ally, c] : otherCars(gw)) {
+		OtherCarState o;
+		o.ally = ally;
+		o.present = !c.IsNull();
+		if (o.present) {
+			o.state = CarState(c);
+		}
+		gs.others.push_back(o);
+	}
+}
+
 GameState::GameState() {
 	ball = ActorState();
 	car = CarState();
@@ -209,9 +273,11 @@ void GameState::write(std::ostream& out) const {
 GameState::GameState(std::shared_ptr<GameWrapper> gw) {
 	ServerWrapper sw = gw->GetGameEventAsServer();
 	ball = ActorState(sw.GetBall());
-	car = CarState(sw.GetGameCar());
+	car = CarState(playerCar(gw));
 	if (gw->IsInCustomTraining()) {
 		time = gw->GetCurrentGameState().GetGameTimeRemaining();
+	} else if (isOfflineMatch(gw)) {
+		captureMatch(*this, gw);
 	} else {
 		time = -1;
 	}
@@ -220,9 +286,11 @@ GameState::GameState(std::shared_ptr<GameWrapper> gw) {
 GameState::GameState(std::shared_ptr<GameWrapper> gw, float lastJumpedTime) {
 	ServerWrapper sw = gw->GetGameEventAsServer();
 	ball = ActorState(sw.GetBall());
-	car = CarState(sw.GetGameCar(), lastJumpedTime);
+	car = CarState(playerCar(gw), lastJumpedTime);
 	if (gw->IsInCustomTraining()) {
 		time = gw->GetCurrentGameState().GetGameTimeRemaining();
+	} else if (isOfflineMatch(gw)) {
+		captureMatch(*this, gw);
 	} else {
 		time = -1;
 	}
@@ -243,11 +311,22 @@ GameState::GameState(const GameState &lh, const GameState &rh, float percent) {
 	} else {
 		time = -1;
 	}
+	pads = rh.pads;
+	others = rh.others;
+	if (lh.others.size() == rh.others.size()) {
+		for (size_t i = 0; i < others.size(); i++) {
+			const OtherCarState& l = lh.others[i];
+			if (l.present && others[i].present && l.ally == others[i].ally) {
+				others[i].state = CarState(l.state, rh.others[i].state, percent);
+			}
+		}
+	}
 }
 
 void GameState::apply(std::shared_ptr<GameWrapper> gw, bool showBoost) const {
 	ServerWrapper sw = gw->GetGameEventAsServer();
-	if (sw.GetBall().IsNull() || sw.GetGameCar().IsNull()) {
+	CarWrapper pc = playerCar(gw);
+	if (sw.GetBall().IsNull() || pc.IsNull()) {
 		return;
 	}
 	if (gw->IsInCustomTraining()) {
@@ -259,14 +338,87 @@ void GameState::apply(std::shared_ptr<GameWrapper> gw, bool showBoost) const {
 		}
 	}
 	ball.apply(sw.GetBall());
-	car.apply(sw.GetGameCar(), showBoost);
+	car.apply(pc, showBoost);
+	if (!isOfflineMatch(gw)) {
+		return;
+	}
+	if (time >= 0 && !sw.GetbUnlimitedTime()) {
+		// Holds the match clock while frozen and takes it back when rewinding.
+		sw.SetGameTimeRemaining(time);
+		sw.SetSecondsRemaining(int(ceil(time)));
+	}
+	// The n-th teammate / opponent gets the n-th saved teammate / opponent, so a
+	// checkpoint also loads in a later match with the same team sizes.
+	size_t next[2] = { 0, 0 };
+	for (auto& [ally, c] : otherCars(gw)) {
+		size_t& i = next[ally ? 1 : 0];
+		while (i < others.size() && others[i].ally != ally) {
+			i++;
+		}
+		if (i >= others.size()) {
+			continue;
+		}
+		const OtherCarState& o = others[i++];
+		if (o.present && !c.IsNull()) {
+			o.state.apply(c, showBoost);
+		}
+	}
 }
 
 GameState GameState::mirror() const {
-	GameState gs;
+	GameState gs = *this;
 	gs.car = car.mirror();
 	gs.ball = ball.mirror();
+	for (auto& o : gs.others) {
+		o.state = o.state.mirror();
+	}
+	for (auto& p : gs.pads) {
+		p.location.X *= -1;
+	}
 	return gs;
+}
+
+GameState GameState::readMatch(std::istream& in, bool withPads) {
+	GameState gs(in);
+	readPOD(in, gs.time);
+	int32_t n = 0;
+	readPOD(in, n);
+	for (int32_t i = 0; i < n && in.good(); i++) {
+		OtherCarState o;
+		readPOD(in, o.ally);
+		readPOD(in, o.present);
+		o.state = CarState(in);
+		gs.others.push_back(o);
+	}
+	if (withPads) {
+		n = 0;
+		readPOD(in, n);
+		for (int32_t i = 0; i < n && in.good(); i++) {
+			PadState p;
+			readVec(in, p.location);
+			readPOD(in, p.remaining);
+			gs.pads.push_back(p);
+		}
+	}
+	return gs;
+}
+
+void GameState::writeMatch(std::ostream& out) const {
+	write(out);
+	writePOD(out, time);
+	auto n = int32_t(others.size());
+	writePOD(out, n);
+	for (auto& o : others) {
+		writePOD(out, o.ally);
+		writePOD(out, o.present);
+		o.state.write(out);
+	}
+	n = int32_t(pads.size());
+	writePOD(out, n);
+	for (auto& p : pads) {
+		writeVec(out, p.location);
+		writePOD(out, p.remaining);
+	}
 }
 
 /*

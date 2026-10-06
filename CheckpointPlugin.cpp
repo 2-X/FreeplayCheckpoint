@@ -19,6 +19,10 @@
 using namespace std::placeholders;
 
 std::string_view DEFAULT_SAVE_FILE_NAME = "freeplaycheckpoint.data";
+std::string_view DEFAULT_MATCH_SAVE_FILE_NAME = "matchcheckpoint.data";
+// Loading a match checkpoint never leaves less than this on the clock, so the
+// match does not end in the middle of a repeated drill.
+constexpr float MATCH_MIN_LOAD_TIME = 60.0f;
 
 BAKKESMOD_PLUGIN(CheckpointPlugin, "Freeplay Checkpoint", plugin_version, PLUGINTYPE_FREEPLAY)
 
@@ -84,6 +88,10 @@ std::unique_ptr<GameState> CheckpointPlugin::getReplayGameState() {
 }
 
 void CheckpointPlugin::setFrozen(bool car, bool ball) {
+	if (rewindMode && !car) {
+		// Play resumes from `latest`: the pads follow, including what happened to them while frozen.
+		applyBoostPads(latest);
+	}
 	rewindMode = car;
 	freezeBall = ball;
 	cvarManager->getCvar("cpt_car_frozen").setValue(car);
@@ -118,6 +126,16 @@ void CheckpointPlugin::onLoad()
 
 	boolvar("cpt_mirror_loads", "If set, randomly mirror when loading checkpoints", &mirrorLoads);
 	boolvar("cpt_randomize_loads", "If set, load a random checkpoint instead of the latest", &randomizeLoads);
+
+	auto matchCV = cvarManager->registerCvar("cpt_enable_match", "1", "If set, also work in offline exhibition / RLBot matches (all cars are frozen and restored)", true, true, 0, true, 1);
+	matchCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
+		matchEnabled = now.getBoolValue();
+	});
+	auto padsCV = cvarManager->registerCvar("cpt_match_boost_pads", "1", "If set, boost pads are restored with the rest of the situation in offline matches", true, true, 0, true, 1);
+	padsCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
+		restorePads = now.getBoolValue();
+	});
+	registerBoostPadHooks();
 
 	// Register CVars for action thresholds and enable/disable toggles
 	cvarManager->registerCvar("enable_throttle_unpause", "1", "Enable throttle to unpause", true, true, 0, true, 1, true);
@@ -175,13 +193,29 @@ void CheckpointPlugin::onLoad()
 	historyLenCV.notify();
 
 	auto filenameCV = cvarManager->registerCvar(
-		"cpt_filename", static_cast<std::string>(DEFAULT_SAVE_FILE_NAME), "Sets the filename to use for saved checkpoints", true, false, 0, false, 0, true);
+		"cpt_filename", static_cast<std::string>(DEFAULT_SAVE_FILE_NAME), "Sets the filename to use for saved checkpoints; every workshop map adds its name to it", true, false, 0, false, 0, true);
 	filenameCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
+		if (matchStoreActive) {
+			return; // read when freeplay is entered again
+		}
 		setFrozen(false, false);
 		curCheckpoint = 0;
+		storePositions.clear();
 		loadCheckpointFile();
 	});
 	snapshotIntervalCV.notify();
+
+	auto matchFilenameCV = cvarManager->registerCvar(
+		"cpt_match_filename", static_cast<std::string>(DEFAULT_MATCH_SAVE_FILE_NAME), "Sets the filename to use for checkpoints saved in offline matches; every team size (1v1, 2v2, ...) adds its name to it", true, false, 0, false, 0, true);
+	matchFilenameCV.addOnValueChanged([this](std::string old, CVarWrapper now) {
+		if (!matchStoreActive) {
+			return; // read when a match is entered
+		}
+		setFrozen(false, false);
+		curCheckpoint = 0;
+		storePositions.clear();
+		loadCheckpointFile();
+	});
 
 	auto resetDelayCV = cvarManager->registerCvar(
 		"cpt_load_after_reset", "0", "Load last checkpoint on reset if loaded within last N seconds", true, true, 0, false, 0, true);
@@ -201,6 +235,13 @@ void CheckpointPlugin::onLoad()
 			if (!enabledLoads()) {
 				return;
 			}
+			if (inMatch()) {
+				// Kickoff countdown, not a freeplay reset.
+				playingFromCheckpoint = false;
+				setFrozen(false, false);
+				dodgeExpiration = 0.0;
+				return;
+			}
 			int resetDelay = cvarManager->getCvar("cpt_load_after_reset").getIntValue();
 			if (!rewindMode && playingFromCheckpoint && resetDelay > 0) {
 				ServerWrapper sw = gameWrapper->GetGameEventAsServer();
@@ -217,6 +258,13 @@ void CheckpointPlugin::onLoad()
 
 	gameWrapper->HookEvent("Function TAGame.Ball_TA.OnHitGoal",
 		[this](std::string eventName) {
+			if (inMatch()) {
+				// The goal counts; replay the checkpoint once the kickoff starts.
+				if (!rewindMode && playingFromCheckpoint && resetOnGoal) {
+					pendingMatchLoad = true;
+				}
+				return;
+			}
 			if (!gameWrapper->IsInFreeplay() || rewindMode || !playingFromCheckpoint || !resetOnGoal) {
 				return;
 			}
@@ -225,7 +273,7 @@ void CheckpointPlugin::onLoad()
 
 	// Enter rewind mode.
 	cvarManager->registerNotifier("cpt_freeze", [this](std::vector<std::string> command) {
-		if (!enabled() || history.size() == 0 || rewindMode || gameWrapper->IsInReplay()) {
+		if (!enabled() || history.size() == 0 || rewindMode || gameWrapper->IsInReplay() || matchBlocked()) {
 			return;
 		}
 		latest = history.back();
@@ -236,13 +284,15 @@ void CheckpointPlugin::onLoad()
 	// If in rewind mode, add a checkpoint or delete the current checkpoint.
 	cvarManager->registerNotifier("cpt_do_checkpoint", std::bind(&CheckpointPlugin::doCheckpoint, this, _1), "Saves/restores/removes a checkpoint", PERMISSION_ALL);
 
-	cvarManager->registerNotifier("cpt_lock_checkpoint", std::bind(&CheckpointPlugin::lockCheckpoint, this, _1), "Lock/unlock a checkpoint", PERMISSION_FREEPLAY);
-	cvarManager->registerNotifier("cpt_prev_checkpoint", std::bind(&CheckpointPlugin::prevCheckpoint, this, _1), "Loads the previous checkpoint", PERMISSION_FREEPLAY);
-	cvarManager->registerNotifier("cpt_next_checkpoint", std::bind(&CheckpointPlugin::nextCheckpoint, this, _1), "Loads the next checkpoint", PERMISSION_FREEPLAY);
-	cvarManager->registerNotifier("cpt_rand_checkpoint", std::bind(&CheckpointPlugin::randCheckpoint, this, _1), "Restores a random saved checkpoint", PERMISSION_FREEPLAY);
+	cvarManager->registerNotifier("cpt_lock_checkpoint", std::bind(&CheckpointPlugin::lockCheckpoint, this, _1), "Lock/unlock a checkpoint", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_prev_checkpoint", std::bind(&CheckpointPlugin::prevCheckpoint, this, _1), "Loads the previous checkpoint", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_next_checkpoint", std::bind(&CheckpointPlugin::nextCheckpoint, this, _1), "Loads the next checkpoint", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_rand_checkpoint", std::bind(&CheckpointPlugin::randCheckpoint, this, _1), "Restores a random saved checkpoint", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_delete_all", std::bind(&CheckpointPlugin::deleteAllCheckpoints, this, _1), "Deletes ALL checkpoints", PERMISSION_ALL);
-	cvarManager->registerNotifier("cpt_mirror_state", std::bind(&CheckpointPlugin::mirrorState, this, _1), "Mirrors the current frozen state", PERMISSION_FREEPLAY);
-	cvarManager->registerNotifier("cpt_freeze_ball", std::bind(&CheckpointPlugin::freezeBallUnfreezeCar, this, _1), "Freezes/unfreezes the ball", PERMISSION_FREEPLAY);
+	cvarManager->registerNotifier("cpt_mirror_state", std::bind(&CheckpointPlugin::mirrorState, this, _1), "Mirrors the current frozen state", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_freeze_ball", std::bind(&CheckpointPlugin::freezeBallUnfreezeCar, this, _1), "Freezes/unfreezes the ball", PERMISSION_ALL);
+	cvarManager->registerNotifier("cpt_ball_in_front", std::bind(&CheckpointPlugin::ballInFront, this, _1), "Puts the ball in front of your car", PERMISSION_ALL);
+	cvarManager->registerCvar("cpt_ball_front_distance", "200", "How far ahead of the car cpt_ball_in_front puts the ball", true, true, 150, true, 1500, true);
 	cvarManager->registerNotifier("cpt_copy", std::bind(&CheckpointPlugin::copyShot, this, _1), "Copies the frozen state / quick checkpoint / last checkpoint to the clipboard", PERMISSION_ALL);
 	cvarManager->registerNotifier("cpt_paste", std::bind(&CheckpointPlugin::pasteShot, this, _1), "Loads a checkpoint from the clipboard as a quick checkpoint", PERMISSION_FREEPLAY);
 
@@ -255,7 +305,175 @@ void CheckpointPlugin::onLoad()
 	writeSettingsFile();
 }
 
+bool CheckpointPlugin::inMatch() {
+	return matchEnabled && isOfflineMatch(gameWrapper);
+}
+
+// In a match, nothing can be frozen or loaded during goal replays and countdowns.
+bool CheckpointPlugin::matchBlocked() {
+	if (!inMatch()) {
+		return false;
+	}
+	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
+	return sw.IsNull() || sw.GetBall().IsNull() || !sw.GetbRoundActive();
+}
+
+static std::string teamKey(int own, int opponents) {
+	return std::to_string(own) + "v" + std::to_string(opponents);
+}
+
+static std::string teamKey(const GameState& s) {
+	int own = 1, opponents = 0;
+	for (auto& o : s.others) {
+		(o.ally ? own : opponents)++;
+	}
+	return teamKey(own, opponents);
+}
+
+// <game>/Binaries/Win64/RocketLeague.exe -> <game>; empty if it cannot be told.
+static std::filesystem::path gameFolder() {
+	wchar_t exe[MAX_PATH];
+	DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+	if (n == 0 || n >= MAX_PATH) {
+		return {};
+	}
+	return std::filesystem::path(exe).parent_path().parent_path().parent_path();
+}
+
+static std::string lower(std::string s) {
+	for (char& c : s) {
+		c = char(std::tolower(static_cast<unsigned char>(c)));
+	}
+	return s;
+}
+
+// Stock arenas are in the game's CookedPCConsole folder; workshop maps are loaded
+// from somewhere else.
+static bool isStockMap(const std::string& map) {
+	std::filesystem::path cooked = gameFolder() / "TAGame" / "CookedPCConsole";
+	std::error_code ec;
+	if (!std::filesystem::is_directory(cooked, ec)) {
+		return true;
+	}
+	return std::filesystem::exists(cooked / (map + ".upk"), ec);
+}
+
+// GetCurrentMap() leaves out everything up to the first '-' of a map's name
+// ("Goal-O-Meter" is "o-meter").  The whole name is taken from the map's file in
+// Steam's workshop folder, if exactly one map there fits.
+static std::string workshopMapName(const std::string& map) {
+	// <steamapps>/common/rocketleague -> <steamapps>/workshop/content/252950/<id>/<map>.udk
+	std::filesystem::path workshop = gameFolder().parent_path().parent_path() / "workshop" / "content" / "252950";
+	std::string found;
+	std::error_code ec;
+	for (auto& item : std::filesystem::directory_iterator(workshop, ec)) {
+		std::error_code ec2;
+		for (auto& f : std::filesystem::directory_iterator(item.path(), ec2)) {
+			if (lower(f.path().extension().string()) != ".udk") {
+				continue;
+			}
+			std::string name = lower(f.path().stem().string());
+			if (name == map || name.substr(name.find('-') + 1) == map) {
+				if (!found.empty() && found != name) {
+					return map; // two maps fit
+				}
+				found = name;
+			}
+		}
+	}
+	return found.empty() ? map : found;
+}
+
+// The store the current mode uses: "" for freeplay on the stock arenas (and custom
+// training), "map_<name>" on a workshop map, "<N>v<M>" (own team first) in an offline match.
+std::string CheckpointPlugin::currentStoreKey(bool match) {
+	if (match) {
+		int own = 0, opponents = 0;
+		if (!matchTeamSizes(gameWrapper, own, opponents)) {
+			// Not on a team yet; decide once the player is.
+			return matchStoreActive ? storeKey : teamKey(1, 0);
+		}
+		return teamKey(own, opponents);
+	}
+	if (!gameWrapper->IsInFreeplay()) {
+		return "";
+	}
+	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
+	if (sw.IsNull()) {
+		return "";
+	}
+	std::string map = gameWrapper->GetCurrentMap();
+	if (map == mapName || map.empty()) { // empty for a moment while a map loads
+		return mapKey;
+	}
+	// A new map was loaded.
+	mapName = map;
+	mapKey = "";
+	map = lower(map);
+	if (isStockMap(map)) {
+		return mapKey;
+	}
+	map = workshopMapName(map);
+	for (char& c : map) {
+		if (!(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '-' && c != '_') {
+			c = '_';
+		}
+	}
+	mapKey = "map_" + map;
+	return mapKey;
+}
+
+// The file of the current store: the configured name, plus the store's key.
+std::filesystem::path CheckpointPlugin::storeFile() {
+	std::filesystem::path name = cvarManager->getCvar(matchStoreActive ? "cpt_match_filename" : "cpt_filename").getStringValue();
+	if (!storeKey.empty()) {
+		std::filesystem::path ext = name.extension();
+		name.replace_extension();
+		name += "_" + storeKey;
+		name += ext;
+	}
+	return gameWrapper->GetDataFolder() / name;
+}
+
+// Switches to the checkpoints of the current mode (freeplay, workshop map, match size)
+// when it changes.
+void CheckpointPlugin::syncStore() {
+	bool match = inMatch();
+	std::string key = currentStoreKey(match);
+	if (match == matchStoreActive && key == storeKey) {
+		return;
+	}
+	storePositions[storeKey] = curCheckpoint;
+	matchStoreActive = match;
+	storeKey = key;
+	loadCheckpointFile();
+	curCheckpoint = storePositions[storeKey];
+	if (curCheckpoint >= checkpoints.size()) {
+		curCheckpoint = 0;
+	}
+	// History and quick checkpoints do not carry over between the modes.
+	history.clear();
+	forgetBoostPads();
+	hasQuickCheckpoint = false;
+	playingFromCheckpoint = false;
+	pendingMatchLoad = false;
+	rewindState = RewindState();
+	setFrozen(false, false);
+	dodgeExpiration = 0.0;
+	std::string mode = match ? "offline match " + key : key.empty() ? "freeplay" : "workshop map " + key.substr(4);
+	cvarManager->log("Freeplay Checkpoint: " + mode + ", using its checkpoints (" + std::to_string(checkpoints.size()) + ")");
+}
+
+// A stored checkpoint as it should be loaded now.
+GameState CheckpointPlugin::forLoad(GameState s) {
+	if (inMatch() && s.time >= 0 && s.time < MATCH_MIN_LOAD_TIME) {
+		s.time = MATCH_MIN_LOAD_TIME;
+	}
+	return s;
+}
+
 bool CheckpointPlugin::enabled() {
+	syncStore();
 	if (gameWrapper->IsInReplay()) {
 		// Replays may be paused when checkpoints are taken.
 		return true;
@@ -267,6 +485,9 @@ bool CheckpointPlugin::enabled() {
 	if (!disableTraining && gameWrapper->IsInCustomTraining()) {
 		return true;
 	}
+	if (inMatch()) {
+		return true;
+	}
 	if (!gameWrapper->IsInFreeplay()) {
 		return false;
 	}
@@ -274,9 +495,13 @@ bool CheckpointPlugin::enabled() {
 }
 
 bool CheckpointPlugin::enabledLoads() {
+	syncStore();
 	if (gameWrapper->IsPaused()) {
 		// Don't allow checkpoint operations while paused.
 		return false;
+	}
+	if (inMatch()) {
+		return true;
 	}
 	if (!gameWrapper->IsInFreeplay()) {
 		return false;
@@ -330,7 +555,8 @@ void CheckpointPlugin::copyShot(std::vector<std::string> command) {
 }
 
 void CheckpointPlugin::pasteShot(std::vector<std::string> command) {
-	if (!enabledLoads()) {
+	// Clipboard checkpoints only hold one car and the ball.
+	if (!enabledLoads() || inMatch()) {
 		return;
 	}
 	OpenClipboard(nullptr);
@@ -358,6 +584,29 @@ void CheckpointPlugin::pasteShot(std::vector<std::string> command) {
 	rewindState.justLoadedQuickCheckpoint = true;
 }
 
+// Like the dribble plugin's "ballontop", but the ball goes in front of the car, moving
+// along with it.
+void CheckpointPlugin::ballInFront(std::vector<std::string> command) {
+	if ((!gameWrapper->IsInFreeplay() && !inMatch()) || gameWrapper->IsPaused() || matchBlocked() || rewindMode || freezeBall) {
+		return;
+	}
+	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
+	if (sw.IsNull()) {
+		return;
+	}
+	BallWrapper ball = sw.GetBall();
+	CarWrapper car = playerCar(gameWrapper);
+	if (ball.IsNull() || car.IsNull()) {
+		return;
+	}
+	float distance = cvarManager->getCvar("cpt_ball_front_distance").getFloatValue();
+	// 76 above the car's centre is where the ball rests on the surface the car stands on.
+	Vector offset = RotateVectorWithQuat(Vector(distance, 0, 76), RotatorToQuat(car.GetRotation()));
+	ball.SetLocation(car.GetLocation() + offset);
+	ball.SetVelocity(car.GetVelocity());
+	ball.SetAngularVelocity(Vector(0, 0, 0), false);
+}
+
 void CheckpointPlugin::freezeBallUnfreezeCar(std::vector<std::string> command) {
 	if (!enabledLoads() || history.size() == 0) {
 		return;
@@ -369,6 +618,9 @@ void CheckpointPlugin::freezeBallUnfreezeCar(std::vector<std::string> command) {
 	if (freezeBall) {
 		setFrozen(false, false);
 		latest.car = history.back().car;
+		latest.others = history.back().others;
+		latest.pads = history.back().pads;
+		latest.time = history.back().time;
 		latest.apply(gameWrapper, showBoost);
 		quickCheckpoint = latest;
 		hasQuickCheckpoint = true;
@@ -538,7 +790,7 @@ void CheckpointPlugin::onUnload() {
 void CheckpointPlugin::loadLatestCheckpoint() {
 	if (hasQuickCheckpoint) {
 		log("loading quick checkpoint");
-		loadGameState(quickCheckpoint);
+		loadGameState(forLoad(quickCheckpoint));
 		hasQuickCheckpoint = true;
 		rewindState.justLoadedQuickCheckpoint = true;
 		return;
@@ -567,17 +819,26 @@ void CheckpointPlugin::loadCurCheckpoint() {
 	if (mirrorLoads && rand() % 2 == 0) {
 		checkpoint = checkpoint.mirror();
 	}
-	loadGameState(checkpoint);
+	hasQuickCheckpoint = false;
+	loadGameState(forLoad(checkpoint));
 	rewindState.atCheckpoint = true;
 }
 
 void CheckpointPlugin::loadGameState(const GameState& state) {
+	if (matchBlocked()) {
+		// Goal replay or kickoff countdown: load as soon as play resumes.
+		pendingMatchLoad = true;
+		return;
+	}
+	pendingMatchLoad = false;
 	latest = state;
 	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
-	if (cvarManager->getCvar("sv_soccar_enablegoal").getBoolValue()) {
+	if (!inMatch() && cvarManager->getCvar("sv_soccar_enablegoal").getBoolValue()) {
 		sw.PlayerResetTraining(); // In case a goal was just scored, there may be no ball.
 	}
 	latest.apply(gameWrapper, false);
+	applyBoostPads(latest);
+	padSettleTicks = 3;
 	rewindState.virtualTimeOffset = 0;
 	rewindState.holdingFor = 0;
 	setFrozen(true, true);
@@ -592,15 +853,32 @@ void CheckpointPlugin::loadGameState(const GameState& state) {
 
 void CheckpointPlugin::OnPreAsync(std::string funcName)
 {
-	if (!gameWrapper->IsInFreeplay() && !gameWrapper->IsInCustomTraining()) {
+	syncStore();
+	bool match = inMatch();
+	if (!gameWrapper->IsInFreeplay() && !gameWrapper->IsInCustomTraining() && !match) {
 		return;
 	}
 	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
-	if (sw.GetBall().IsNull() || sw.GetGameCar().IsNull()) {
+	if (sw.GetBall().IsNull() || playerCar(gameWrapper).IsNull()) {
 		return;
+	}
+	if (match) {
+		bool playing = sw.GetbRoundActive();
+		if (pendingMatchLoad && playing && !gameWrapper->IsPaused()) {
+			pendingMatchLoad = false;
+			loadLatestCheckpoint();
+		}
+		if (!playing && !rewindMode) {
+			return; // Goal replay / kickoff countdown: nothing worth recording.
+		}
 	}
 
 	if (rewindMode) {
+		if (padSettleTicks > 0 && --padSettleTicks == 0) {
+			// A car that stood on a pad when the state was loaded may have taken it
+			// again before it was moved away; put the pads right once more.
+			applyBoostPads(latest);
+		}
 		if (rewind(sw)) {
 			applyVariance(latest).apply(gameWrapper, showBoost);
 		}
@@ -631,7 +909,7 @@ float getInputValue(const std::string& axisName, const ControllerInput& ci) {
 
 // Returns true if we need to apply the state again.
 bool CheckpointPlugin::rewind(ServerWrapper sw) {
-	ControllerInput ci = sw.GetCars().Get(0).GetInput();
+	ControllerInput ci = (inMatch() ? playerCar(gameWrapper) : sw.GetCars().Get(0)).GetInput();
 
 	float currentTime = sw.GetSecondsElapsed();
 	float elapsed = std::min(currentTime - lastRewindTime, 0.03f);
@@ -717,6 +995,14 @@ bool CheckpointPlugin::rewind(ServerWrapper sw) {
 	if (abs(rewindInput) < rewindThreshold) {
 		return true; // Ignoring input; apply state.
 	} else if (isAtCheckpoint) {
+		// At a checkpoint the rewind input resumes play instead of rewinding, but only
+		// if that input is set to unpause; otherwise it is ignored.
+		CVarWrapper unpause = cvarManager->getCvar("enable_" + rewindAxis + "_unpause");
+		CVarWrapper threshold = cvarManager->getCvar(rewindAxis + "_threshold");
+		if (unpause.IsNull() || threshold.IsNull() || !unpause.getBoolValue() ||
+			fabs(rewindInput) <= threshold.getFloatValue()) {
+			return true; // Ignoring input; apply state.
+		}
 		log("checkpoint active, unpausing game instead of rewinding");
 		setFrozen(false, false);
 		return false;  // Unpausing the game due to checkpoint.
@@ -815,7 +1101,7 @@ void CheckpointPlugin::record(ServerWrapper sw)
 	if (dodgeExpiration != 0) {
 		// If the timer expires or if the player double-jumps or gets a reset,
 		// clear the jump timer so we don't take the player's dodge.
-		auto c = sw.GetGameCar();
+		auto c = playerCar(gameWrapper);
 		if (c && (currentTime > dodgeExpiration ||
 				  c.GetbDoubleJumped() ||
 				  c.GetNumWheelContacts() == 4)) {
@@ -837,6 +1123,10 @@ void CheckpointPlugin::record(ServerWrapper sw)
 		history.emplace_back(gameWrapper);
 	} else {
 		history.emplace_back(gameWrapper, MAX_DODGE_TIME - currentTime + dodgeExpiration);
+	}
+	if (restorePads && inMatch()) {
+		pollBoostPads(std::min(elapsed, 0.1f));
+		history.back().pads = captureBoostPads();
 	}
 }
 
@@ -910,22 +1200,38 @@ void CheckpointPlugin::Render(CanvasWrapper canvas) {
 
 // Prevent loading an unknown version's save file.
 constexpr uint32_t SAVE_FILE_VERSION = 1;
+// Match checkpoints hold a variable number of cars; they use their own file and version.
+// Version 3 added the boost pads.
+constexpr uint32_t MATCH_SAVE_FILE_VERSION = 3;
+constexpr uint32_t MATCH_SAVE_FILE_VERSION_NO_PADS = 2;
 
 void CheckpointPlugin::loadCheckpointFile() {
 	checkpoints.clear();
 	locks.clear();
-	std::ifstream in(gameWrapper->GetDataFolder() / cvarManager->getCvar("cpt_filename").getStringValue(), std::ios::binary);
-	uint32_t version;
+	std::filesystem::path file = storeFile();
+	// Match checkpoints saved before every team size had its own file are all in the
+	// file without a team size; a team size without a file yet takes its own from there.
+	std::error_code ec;
+	bool shared = matchStoreActive && !std::filesystem::exists(file, ec);
+	if (shared) {
+		file = gameWrapper->GetDataFolder() / cvarManager->getCvar("cpt_match_filename").getStringValue();
+	}
+	std::ifstream in(file, std::ios::binary);
+	uint32_t version = 0;
 	readPOD(in, version);
-	if (version != SAVE_FILE_VERSION) {
+	if (matchStoreActive ? (version != MATCH_SAVE_FILE_VERSION && version != MATCH_SAVE_FILE_VERSION_NO_PADS) : version != SAVE_FILE_VERSION) {
 		in.close();
 		log("could not load save file with version " + std::to_string(version));
 		return;
 	}
-	int32_t numSaves;
+	int32_t numSaves = 0;
 	readPOD(in, numSaves);
 	for (int32_t i = 0; i < numSaves; i++) {
-		checkpoints.emplace_back(in);
+		if (matchStoreActive) {
+			checkpoints.push_back(GameState::readMatch(in, version >= MATCH_SAVE_FILE_VERSION));
+		} else {
+			checkpoints.emplace_back(in);
+		}
 	}
 	int32_t numLocks = 0; // older save files did not have this data; initialize to 0.
 	readPOD(in, numLocks);
@@ -935,16 +1241,32 @@ void CheckpointPlugin::loadCheckpointFile() {
 		locks.push_back(locked);
 	}
 	in.close();
+	if (shared) {
+		std::vector<GameState> own;
+		std::vector<bool> ownLocks;
+		for (size_t i = 0; i < checkpoints.size(); i++) {
+			if (teamKey(checkpoints[i]) == storeKey) {
+				own.push_back(checkpoints[i]);
+				ownLocks.push_back(i < locks.size() && locks[i]);
+			}
+		}
+		checkpoints = own;
+		locks = ownLocks;
+	}
 }
 
 void CheckpointPlugin::saveCheckpointFile() {
-	std::ofstream out(gameWrapper->GetDataFolder() / cvarManager->getCvar("cpt_filename").getStringValue(), std::ios::binary | std::ios::out | std::ios::trunc);
-	auto ver = SAVE_FILE_VERSION;
+	std::ofstream out(storeFile(), std::ios::binary | std::ios::out | std::ios::trunc);
+	auto ver = matchStoreActive ? MATCH_SAVE_FILE_VERSION : SAVE_FILE_VERSION;
 	writePOD(out, ver);
 	auto size = int32_t(checkpoints.size());
 	writePOD(out, size);
 	for (auto& fav : checkpoints) {
-		fav.write(out);
+		if (matchStoreActive) {
+			fav.writeMatch(out);
+		} else {
+			fav.write(out);
+		}
 	}
 	size = int32_t(locks.size());
 	writePOD(out, size);

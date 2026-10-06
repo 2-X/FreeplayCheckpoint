@@ -15,6 +15,9 @@
 
 #include "version.h"
 
+#include <filesystem>
+#include <map>
+
 constexpr auto plugin_version = stringify(VERSION_MAJOR) "." stringify(VERSION_MINOR) "." stringify(VERSION_PATCH) "." stringify(VERSION_BUILD);
 constexpr float MAX_DODGE_TIME = 1.2f;
 
@@ -49,6 +52,17 @@ struct RewindState {
 	int buttonsDown = 0x7f;
 };
 
+// A boost pad of the current match.  The SDK cannot list them, so they are learned
+// from the game's pickup / respawn events.
+struct BoostPad {
+	std::uintptr_t addr = 0;
+	Vector location;
+	float delay = 0;      // the pad's own respawn delay
+	bool down = false;
+	bool managed = false; // put down by a restore: the game will not respawn it, we do
+	float remaining = 0;  // seconds of play until it is back
+};
+
 class CheckpointPlugin : public BakkesMod::Plugin::BakkesModPlugin {
 	//Boilerplate
 	virtual void onLoad();
@@ -58,6 +72,7 @@ class CheckpointPlugin : public BakkesMod::Plugin::BakkesModPlugin {
 	void randCheckpoint(std::vector<std::string> command);
 	void pasteShot(std::vector<std::string> command);
 	void freezeBallUnfreezeCar(std::vector<std::string> command);
+	void ballInFront(std::vector<std::string> command);
 	virtual void onUnload();
 	void doCheckpoint(std::vector<std::string> command);
 	void lockCheckpoint(std::vector<std::string> command);
@@ -82,6 +97,21 @@ private:
 	int carNum = 0;
 	bool playingFromCheckpoint = false;
 
+	// Freeplay, every workshop map and every team size of offline matches (exhibition /
+	// RLBot) keep their own checkpoints, each in its own file.  checkpoints, locks and
+	// curCheckpoint above are always the store of the current mode.
+	bool matchStoreActive = false; // the store holds match checkpoints (all cars, clock, pads)
+	std::string storeKey;          // "" freeplay, "map_<name>" workshop map, "<N>v<M>" match
+	std::map<std::string, size_t> storePositions; // curCheckpoint of the stores left behind
+	std::string mapName;           // the freeplay map last looked at ...
+	std::string mapKey;            // ... and its storeKey
+	// A checkpoint load was requested during a goal replay or kickoff countdown.
+	bool pendingMatchLoad = false;
+	std::vector<BoostPad> pads;
+	std::uintptr_t padsGameEvent = 0;
+	bool restorePads = true;
+	int padSettleTicks = 0;
+
 	// Settings:
 	bool deleteFutureHistory = false;
 	bool ignorePNNotFrozen = false;
@@ -97,6 +127,7 @@ private:
 	bool mirrorLoads = false;
 	bool randomizeLoads = false;
 	bool showBoost = false;
+	bool matchEnabled = true;
 
 	void addBind(std::string key, std::string cmd);
 	void removeBind(std::string key, std::string cmd);
@@ -124,4 +155,16 @@ private:
 	void writeSettingsFile();
 	bool enabled();
 	bool enabledLoads();
+	bool inMatch();
+	bool matchBlocked();
+	void syncStore();
+	std::string currentStoreKey(bool match);
+	std::filesystem::path storeFile();
+	GameState forLoad(GameState s);
+	void registerBoostPadHooks();
+	void noteBoostPad(ActorWrapper pad);
+	void forgetBoostPads();
+	void pollBoostPads(float elapsed);
+	std::vector<PadState> captureBoostPads();
+	void applyBoostPads(const GameState& s);
 };
