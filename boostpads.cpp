@@ -46,10 +46,12 @@ void CheckpointPlugin::registerBoostPadHooks() {
 				p->remaining = p->delay;
 			}
 		});
-	// The pads go away with the match.
+	// The pads (and the cars) go away with the match.
 	gameWrapper->HookEvent("Function TAGame.GameEvent_Soccar_TA.Destroyed",
 		[this](std::string eventName) {
 			forgetBoostPads();
+			forgetDemolishedCars();
+			parkedCars.clear();
 		});
 }
 
@@ -126,8 +128,8 @@ void CheckpointPlugin::applyBoostPads(const GameState& s) {
 	}
 	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
 	CarWrapper car = playerCar(gameWrapper);
-	if (sw.IsNull() || sw.memory_address != padsGameEvent || car.IsNull() || car.GetBoostComponent().IsNull()) {
-		return;
+	if (sw.IsNull() || sw.memory_address != padsGameEvent || !carAlive(car) || car.GetBoostComponent().IsNull()) {
+		return; // a demolished player: the pads are put right when the car is back (padSettleTicks / resume)
 	}
 	float boost = car.GetBoostComponent().GetCurrentBoostAmount();
 	for (size_t i = 0; i < pads.size(); i++) {

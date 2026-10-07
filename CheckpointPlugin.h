@@ -113,6 +113,9 @@ private:
 	std::uintptr_t padsGameEvent = 0;
 	bool restorePads = true;
 	int padSettleTicks = 0;
+	// Cars held in place while frozen because the frozen state has nothing for them
+	// (see GameState::apply); emptied when a freeze starts and when a resume has settled.
+	ParkedCars parkedCars;
 
 	// Settings:
 	bool deleteFutureHistory = false;
@@ -187,6 +190,8 @@ private:
 	bool shownFlipped(const GameState& s);
 	void registerBoostPadHooks();
 	void registerBotCameraHooks();
+	void registerDemolitionHooks();
+	void holdFrozen();
 	void pollBotCamera(float elapsed);
 	void copyCameraToBots(bool force);
 	void noteBoostPad(ActorWrapper pad);

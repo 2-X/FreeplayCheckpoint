@@ -11,6 +11,8 @@
 #include "bakkesmod/plugin/bakkesmodplugin.h"
 #include "bakkesmod/plugin/pluginwindow.h"
 
+#include <map>
+
 class ActorState {
 public:
 	Vector location;
@@ -66,6 +68,21 @@ public:
 	float remaining = 0;
 };
 
+// A car that can be read and moved: it exists and is not demolished.  A demolished
+// car's actor lingers (hidden, its physics gone) until the game destroys it a moment
+// later, and its PRI keeps pointing at it meanwhile; reading its components or moving
+// it crashes the game.  Demolitions are learned from the game's events
+// (CheckpointPlugin::registerDemolitionHooks).
+bool carAlive(CarWrapper c);
+// Returns true if the car was not known to be demolished yet.
+bool noteCarDemolished(std::uintptr_t car);
+void noteCarSpawned(std::uintptr_t car);
+void forgetDemolishedCars();
+
+// Cars held where they are while frozen because the frozen state has nothing for
+// them (they were demolished when it was recorded), by actor address.
+using ParkedCars = std::map<std::uintptr_t, ActorState>;
+
 // True in offline exhibition matches (including RLBot matches); never in online games.
 bool isOfflineMatch(std::shared_ptr<GameWrapper> gw);
 // The team sizes of the current offline match, the local player's team first.
@@ -101,7 +118,10 @@ public:
 	// (version: the match save file version, which says which of these are there).
 	static GameState readMatch(std::istream& in, uint32_t version);
 	void writeMatch(std::ostream& out) const;
-	void apply(std::shared_ptr<GameWrapper> gw, bool showBoost) const;
+	// Puts the game into this state.  In an offline match a car that is alive now but
+	// was demolished when the state was recorded is held where it is if `parked` is
+	// given (while frozen), and left alone otherwise (resuming play).
+	void apply(std::shared_ptr<GameWrapper> gw, bool showBoost, ParkedCars* parked = nullptr) const;
 	const std::string toString() const;
 	GameState mirror() const;
 	// The whole situation turned around to the other team's side (see ActorState).

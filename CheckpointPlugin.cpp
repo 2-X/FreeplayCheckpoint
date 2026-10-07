@@ -219,6 +219,7 @@ void CheckpointPlugin::onLoad()
 	});
 	registerBoostPadHooks();
 	registerBotCameraHooks();
+	registerDemolitionHooks();
 
 	// Register CVars for action thresholds and enable/disable toggles
 	cvarManager->registerCvar("enable_throttle_unpause", "1", "Enable throttle to unpause", true, true, 0, true, 1, true);
@@ -319,7 +320,9 @@ void CheckpointPlugin::onLoad()
 				return;
 			}
 			if (inMatch()) {
-				// Kickoff countdown, not a freeplay reset.
+				// Kickoff countdown, not a freeplay reset.  Every car is back for it.
+				forgetDemolishedCars();
+				parkedCars.clear();
 				playingFromCheckpoint = false;
 				setFrozen(false, false);
 				dodgeExpiration = 0.0;
@@ -392,6 +395,48 @@ void CheckpointPlugin::onLoad()
 
 bool CheckpointPlugin::inMatch() {
 	return matchEnabled && isOfflineMatch(gameWrapper);
+}
+
+// Keeps track of which cars are demolished (see carAlive()).  A demolished car's
+// actor is not destroyed right away: it lingers through the explosion with its
+// physics gone, still as its PRI's car, and moving it crashed the game whenever a
+// checkpoint was loaded or scrubbed at that moment.
+void CheckpointPlugin::registerDemolitionHooks() {
+	auto demolished = [this](CarWrapper caller, void* params, std::string eventName) {
+		if (caller.IsNull()) {
+			return;
+		}
+		if (noteCarDemolished(caller.memory_address)) {
+			log(fmt::format("car {:#x} demolished ({})", caller.memory_address, eventName));
+		}
+	};
+	// Every way a car gets demolished goes through one of these; the last one runs
+	// when the explosion is over and the actor is about to be destroyed.
+	for (const char* fn : { "Function TAGame.Car_TA.Demolish", "Function TAGame.Car_TA.Demolish2",
+	                        "Function TAGame.Car_TA.EventDemolished", "Function TAGame.Car_TA.DemolishDestroyTimer" }) {
+		gameWrapper->HookEventWithCaller<CarWrapper>(fn, demolished);
+	}
+	// AddCar(Car_TA Car) runs for every car put into the match: at the start and on
+	// every respawn.  A new car may reuse a demolished one's address, so it is cleared.
+	gameWrapper->HookEventWithCallerPost<ActorWrapper>("Function TAGame.GameEvent_TA.AddCar",
+		[this](ActorWrapper caller, void* params, std::string eventName) {
+			if (params == nullptr) {
+				return;
+			}
+			noteCarSpawned(*static_cast<std::uintptr_t*>(params));
+		});
+	// The match ending clears the rest (hooked once, in registerBoostPadHooks).
+}
+
+// Puts the frozen situation back, as it is shown while frozen: with the variance
+// settings applied, the ball kept out of the net in a match, and cars the state has
+// nothing for held where they are.
+void CheckpointPlugin::holdFrozen() {
+	GameState shown = applyVariance(latest);
+	if (noGoalsFrozen && inMatch()) {
+		shown = keepBallOutOfGoal(shown); // scrubbing must never put the ball in the net
+	}
+	shown.apply(gameWrapper, showBoost, &parkedCars);
 }
 
 // In a match, nothing can be frozen or loaded during goal replays and countdowns.
@@ -539,6 +584,8 @@ void CheckpointPlugin::syncStore() {
 	// History and quick checkpoints do not carry over between the modes.
 	history.clear();
 	forgetBoostPads();
+	forgetDemolishedCars();
+	parkedCars.clear();
 	hasQuickCheckpoint = false;
 	playingFromCheckpoint = false;
 	pendingMatchLoad = false;
@@ -705,7 +752,7 @@ void CheckpointPlugin::ballInFront(std::vector<std::string> command) {
 	}
 	BallWrapper ball = sw.GetBall();
 	CarWrapper car = playerCar(gameWrapper);
-	if (ball.IsNull() || car.IsNull()) {
+	if (ball.IsNull() || !carAlive(car)) {
 		return;
 	}
 	float distance = cvarManager->getCvar("cpt_ball_front_distance").getFloatValue();
@@ -1011,6 +1058,7 @@ void CheckpointPlugin::loadGameState(const GameState& state) {
 	}
 	pendingMatchLoad = false;
 	settling = false; // a new load supersedes any settle in progress
+	parkedCars.clear(); // a new freeze: cars without a state are held where they are now
 	latest = state;
 	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
 	if (!inMatch() && cvarManager->getCvar("sv_soccar_enablegoal").getBoolValue()) {
@@ -1020,9 +1068,9 @@ void CheckpointPlugin::loadGameState(const GameState& state) {
 		suppressGoals(true); // before the state lands: the loaded ball may be in the net
 	}
 	if (noGoalsFrozen && inMatch()) {
-		keepBallOutOfGoal(latest).apply(gameWrapper, false);
+		keepBallOutOfGoal(latest).apply(gameWrapper, false, &parkedCars);
 	} else {
-		latest.apply(gameWrapper, false);
+		latest.apply(gameWrapper, false, &parkedCars);
 	}
 	applyBoostPads(latest);
 	padSettleTicks = 3;
@@ -1046,7 +1094,7 @@ void CheckpointPlugin::OnPreAsync(std::string funcName)
 		return;
 	}
 	ServerWrapper sw = gameWrapper->GetGameEventAsServer();
-	if (sw.GetBall().IsNull() || playerCar(gameWrapper).IsNull()) {
+	if (sw.IsNull() || sw.GetBall().IsNull()) {
 		return;
 	}
 	if (match) {
@@ -1059,15 +1107,25 @@ void CheckpointPlugin::OnPreAsync(std::string funcName)
 			return; // Goal replay / kickoff countdown: nothing worth recording.
 		}
 	}
+	if (!carAlive(playerCar(gameWrapper))) {
+		// The player's car is gone (demolished, in a match).  Frozen: keep holding the
+		// rest of the situation until the car is back; it gets its state then.
+		if (match && rewindMode) {
+			settling = false;
+			holdFrozen();
+		}
+		return;
+	}
 
 	if (settling) {
 		// Just resumed in a match: hold the resumed situation for settleMs so the bots
 		// get a few decision cycles on it before anything moves (see settleMs).
 		if (match && sw.GetSecondsElapsed() < settleUntil) {
-			latest.apply(gameWrapper, showBoost);
+			latest.apply(gameWrapper, showBoost, &parkedCars);
 			return;
 		}
 		settling = false;
+		parkedCars.clear();
 	}
 	if (rewindMode) {
 		if (padSettleTicks > 0 && --padSettleTicks == 0) {
@@ -1076,11 +1134,7 @@ void CheckpointPlugin::OnPreAsync(std::string funcName)
 			applyBoostPads(latest);
 		}
 		if (rewind(sw)) {
-			GameState shown = applyVariance(latest);
-			if (noGoalsFrozen && inMatch()) {
-				shown = keepBallOutOfGoal(shown); // scrubbing must never put the ball in the net
-			}
-			shown.apply(gameWrapper, showBoost);
+			holdFrozen();
 		}
 	} else {
 		record(sw);
@@ -1302,7 +1356,7 @@ void CheckpointPlugin::record(ServerWrapper sw)
 		// If the timer expires or if the player double-jumps or gets a reset,
 		// clear the jump timer so we don't take the player's dodge.
 		auto c = playerCar(gameWrapper);
-		if (c && (currentTime > dodgeExpiration ||
+		if (carAlive(c) && (currentTime > dodgeExpiration ||
 				  c.GetbDoubleJumped() ||
 				  c.GetNumWheelContacts() == 4)) {
 			c.SetbJumped(true);

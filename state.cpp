@@ -12,6 +12,32 @@
 #include "CheckpointPlugin.h"
 #include "utils/customrotator.h"
 
+#include <set>
+
+// The cars demolished right now, by actor address.  An address is dropped again
+// when the game puts a car with it into the match (respawn), at every kickoff and
+// when the match ends.
+static std::set<std::uintptr_t> demolishedCars;
+
+bool noteCarDemolished(std::uintptr_t car) {
+	return car != 0 && demolishedCars.insert(car).second;
+}
+
+void noteCarSpawned(std::uintptr_t car) {
+	demolishedCars.erase(car);
+}
+
+void forgetDemolishedCars() {
+	demolishedCars.clear();
+}
+
+bool carAlive(CarWrapper c) {
+	if (c.IsNull() || c.GetbDeleteMe()) {
+		return false; // none, or destroyed and waiting to be freed
+	}
+	return demolishedCars.count(c.memory_address) == 0;
+}
+
 static inline void readVec(std::istream& in, Vector& v) {
 	readPOD(in, v.X);
 	readPOD(in, v.Y);
@@ -219,7 +245,9 @@ int playerTeam(std::shared_ptr<GameWrapper> gw) {
 }
 
 // Every car but the local player's, in PRI order (stable for the whole match, unlike
-// the car list, which changes on demolitions).  The car is null while demolished.
+// the car list, which changes on demolitions).  The car is null while a player waits
+// to respawn, or the lingering demolished actor right after a demolition: always
+// check it with carAlive() before touching it.
 static std::vector<std::pair<bool, CarWrapper>> otherCars(std::shared_ptr<GameWrapper> gw) {
 	std::vector<std::pair<bool, CarWrapper>> out;
 	ServerWrapper sw = gw->GetGameEventAsServer();
@@ -263,7 +291,7 @@ static void captureMatch(GameState& gs, std::shared_ptr<GameWrapper> gw) {
 	for (auto& [ally, c] : otherCars(gw)) {
 		OtherCarState o;
 		o.ally = ally;
-		o.present = !c.IsNull();
+		o.present = carAlive(c);
 		if (o.present) {
 			o.state = CarState(c);
 		}
@@ -360,10 +388,15 @@ GameState::GameState(const GameState &lh, const GameState &rh, float percent) {
 	}
 }
 
-void GameState::apply(std::shared_ptr<GameWrapper> gw, bool showBoost) const {
+void GameState::apply(std::shared_ptr<GameWrapper> gw, bool showBoost, ParkedCars* parked) const {
 	ServerWrapper sw = gw->GetGameEventAsServer();
+	if (sw.IsNull() || sw.GetBall().IsNull()) {
+		return;
+	}
 	CarWrapper pc = playerCar(gw);
-	if (sw.GetBall().IsNull() || pc.IsNull()) {
+	bool match = isOfflineMatch(gw);
+	bool playerAlive = carAlive(pc);
+	if (!playerAlive && !match) {
 		return;
 	}
 	if (gw->IsInCustomTraining()) {
@@ -375,8 +408,12 @@ void GameState::apply(std::shared_ptr<GameWrapper> gw, bool showBoost) const {
 		}
 	}
 	ball.apply(sw.GetBall());
-	car.apply(pc, showBoost);
-	if (!isOfflineMatch(gw)) {
+	if (playerAlive) {
+		// In a match the player may be demolished: the rest of the situation still
+		// lands, and the car gets its state as soon as it is back.
+		car.apply(pc, showBoost);
+	}
+	if (!match) {
 		return;
 	}
 	if (time >= 0 && !sw.GetbUnlimitedTime()) {
@@ -396,8 +433,22 @@ void GameState::apply(std::shared_ptr<GameWrapper> gw, bool showBoost) const {
 			continue;
 		}
 		const OtherCarState& o = others[i++];
-		if (o.present && !c.IsNull()) {
+		if (!carAlive(c)) {
+			continue; // demolished: nothing to move; it gets its state when it is back
+		}
+		if (o.present) {
 			o.state.apply(c, showBoost);
+		} else if (parked != nullptr) {
+			// Alive now, but demolished when this state was recorded: there is nothing
+			// to put it back to, so it is held where it stands, like everyone else.
+			auto it = parked->find(c.memory_address);
+			if (it == parked->end()) {
+				ActorState hold(c);
+				hold.velocity = Vector(0, 0, 0);
+				hold.angVelocity = Vector(0, 0, 0);
+				it = parked->emplace(c.memory_address, hold).first;
+			}
+			it->second.apply(c);
 		}
 	}
 }
